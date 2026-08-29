@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "self-cognition-agent"
+version = "0.1.0"
+description = "A modular self-cognition agent runtime"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+openai = ["openai>=2.46,<3"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+pythonpath = ["src"]
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-m 'not live_openai'"
+markers = [
+    "live_openai: requires explicit OpenAI credentials and network access",
+]
