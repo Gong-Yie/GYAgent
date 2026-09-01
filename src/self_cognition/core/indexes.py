@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Mapping
 
+from self_cognition.core.scopes import DEFAULT_MIND_ID, SubjectKind
 from self_cognition.core.state import SubjectState
 
 
@@ -18,6 +19,8 @@ class WorkspaceIndex:
     source_state_version: int
     fields_by_prefix: Mapping[str, tuple[str, ...]]
     time_index: tuple[tuple[datetime, str], ...]
+    source_mind_id: str = DEFAULT_MIND_ID
+    source_subject_kind: SubjectKind = SubjectKind.USER
 
     @classmethod
     def build(cls, state: SubjectState) -> "WorkspaceIndex":
@@ -46,11 +49,15 @@ class WorkspaceIndex:
             source_state_version=state.version,
             fields_by_prefix=frozen_fields,
             time_index=tuple(sorted(timed_fields, key=lambda item: (item[0], item[1]))),
+            source_mind_id=state.mind_id,
+            source_subject_kind=state.subject_kind,
         )
 
     def is_compatible(self, state: SubjectState) -> bool:
         return (
             self.source_subject_id == state.subject_id
+            and self.source_mind_id == state.mind_id
+            and self.source_subject_kind is state.subject_kind
             and self.source_state_version == state.version
         )
 

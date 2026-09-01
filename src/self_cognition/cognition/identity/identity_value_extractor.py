@@ -1,5 +1,6 @@
 from self_cognition.core.contributions import Contribution
-from self_cognition.core.events import Event
+from self_cognition.core.evidence import EvidenceRef
+from self_cognition.core.events import EventEnvelope
 from self_cognition.core.ids import contribution_id
 
 
@@ -17,13 +18,13 @@ class IdentityValueExtractor:
 
     subscriptions = frozenset({"user.message"})
 
-    def process(self, event: Event) -> tuple[Contribution, ...]:
-        if event.content.endswith(("？", "?")):
+    def process(self, event: EventEnvelope) -> tuple[Contribution, ...]:
+        if event.payload.text.endswith(("？", "?")):
             return ()
         for prefix, target_field, explicitly_confirmed in STATEMENT_PREFIXES:
-            if not event.content.startswith(prefix):
+            if not event.payload.text.startswith(prefix):
                 continue
-            value = event.content[len(prefix):].strip()
+            value = event.payload.text[len(prefix):].strip()
             if not value:
                 return ()
             return (
@@ -33,12 +34,11 @@ class IdentityValueExtractor:
                         SOURCE_MODULE,
                         f"{target_field}:{value}:{explicitly_confirmed}",
                     ),
-                    target_subject_id=event.actor_id,
+                    target_subject_id=event.subject.subject.subject_id,
                     target_field=target_field,
                     value=value,
                     confidence=1.0,
-                    evidence_event_ids=(event.event_id,),
-                    source_event_id=event.event_id,
+                    evidence_refs=(EvidenceRef.for_event(event),),
                     source_module=SOURCE_MODULE,
                     explicitly_confirmed=explicitly_confirmed,
                 ),

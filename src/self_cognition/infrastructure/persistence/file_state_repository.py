@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -6,6 +7,12 @@ from pathlib import Path
 from self_cognition.core.errors import (
     MalformedSerializedDataError,
     VersionConflictError,
+)
+from self_cognition.core.scopes import (
+    DEFAULT_MIND_ID,
+    SubjectKind,
+    SubjectScope,
+    normalize_subject_scope,
 )
 from self_cognition.core.state import SubjectState
 from self_cognition.infrastructure.persistence.serialization import (
@@ -19,8 +26,9 @@ class FileStateRepository:
         self._directory = Path(directory)
         self._directory.mkdir(parents=True, exist_ok=True)
 
-    def load(self, subject_id: str) -> SubjectState | None:
-        path = self._path_for(subject_id)
+    def load(self, subject: SubjectScope | str) -> SubjectState | None:
+        subject_scope = normalize_subject_scope(subject)
+        path = self._path_for(subject_scope)
         if not path.exists():
             return None
 
@@ -31,14 +39,14 @@ class FileStateRepository:
                 "state snapshot is not valid UTF-8"
             ) from error
         state = state_from_json(payload)
-        if state.subject_id != subject_id:
+        if state.subject_scope != subject_scope:
             raise MalformedSerializedDataError(
-                "state snapshot subject does not match requested subject"
+                "state snapshot scope does not match requested scope"
             )
         return state
 
     def save(self, state: SubjectState, expected_version: int) -> None:
-        current_state = self.load(state.subject_id)
+        current_state = self.load(state.subject_scope)
         current_version = current_state.version if current_state is not None else 0
         if expected_version != current_version:
             raise VersionConflictError(
@@ -49,7 +57,7 @@ class FileStateRepository:
                 "new state version must be greater than stored state version"
             )
 
-        target = self._path_for(state.subject_id)
+        target = self._path_for(state.subject_scope)
         payload = state_to_json(state)
         temporary_path: Path | None = None
         try:
@@ -72,6 +80,22 @@ class FileStateRepository:
             if temporary_path is not None:
                 temporary_path.unlink(missing_ok=True)
 
-    def _path_for(self, subject_id: str) -> Path:
-        digest = hashlib.sha256(subject_id.encode("utf-8")).hexdigest()
+    def _path_for(self, subject: SubjectScope | str) -> Path:
+        subject_scope = normalize_subject_scope(subject)
+        if (
+            subject_scope.mind.mind_id == DEFAULT_MIND_ID
+            and subject_scope.subject.kind is SubjectKind.USER
+        ):
+            key = subject_scope.subject.subject_id
+        else:
+            key = json.dumps(
+                [
+                    subject_scope.mind.mind_id,
+                    subject_scope.subject.kind.value,
+                    subject_scope.subject.subject_id,
+                ],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
         return self._directory / f"{digest}.json"

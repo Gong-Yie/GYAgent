@@ -1,11 +1,12 @@
 import inspect
+from dataclasses import replace
 
-from self_cognition.core.contributions import Contribution
+from self_cognition.blackboard.service import CognitiveSpaceService
+from self_cognition.core.contributions import CognitiveContribution
 from self_cognition.core.errors import RunCancelledError
-from self_cognition.core.events import Event
+from self_cognition.core.events import EventEnvelope
 from self_cognition.core.protocols import CognitiveModule
 from self_cognition.core.state import SubjectState
-from self_cognition.runtime.reducer import StateReducer
 from self_cognition.runtime.run_context import RunContext
 
 
@@ -13,18 +14,18 @@ class CognitionEngine:
     def __init__(
         self,
         modules: tuple[CognitiveModule, ...],
-        reducer: StateReducer,
+        cognitive_space: CognitiveSpaceService,
     ) -> None:
         self._modules = modules
-        self._reducer = reducer
+        self._cognitive_space = cognitive_space
 
     def process(
         self,
-        event: Event,
+        event: EventEnvelope,
         state: SubjectState,
         context: RunContext | None = None,
     ) -> SubjectState:
-        contributions: list[Contribution] = []
+        contributions: list[CognitiveContribution] = []
         module_errors: list[Exception] = []
         for module in self._modules:
             if context is not None and context.is_cancelled:
@@ -53,4 +54,14 @@ class CognitionEngine:
         if context is not None and context.is_cancelled:
             raise RunCancelledError("run cancelled before state reduction")
 
-        return self._reducer.apply_many(state, tuple(contributions))
+        bound_contributions = tuple(
+            replace(contribution, target_version=state.version)
+            if contribution.target_version is None
+            else contribution
+            for contribution in contributions
+        )
+        return self._cognitive_space.submit(
+            state,
+            bound_contributions,
+            decided_at=event.recorded_at,
+        )

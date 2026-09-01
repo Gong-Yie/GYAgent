@@ -3,6 +3,8 @@ from pathlib import Path
 
 from self_cognition.application.process_event import ProcessEventService
 from self_cognition.application.replay import ReplayService
+from self_cognition.blackboard.reducer import StateReducer
+from self_cognition.blackboard.service import CognitiveSpaceService
 from self_cognition.cognition.affect.affect_extractor import AffectExtractor
 from self_cognition.cognition.episodic.memory_extractor import (
     EpisodicMemoryExtractor,
@@ -19,7 +21,11 @@ from self_cognition.cognition.narrative.narrative_extractor import (
 from self_cognition.cognition.relationship.relationship_extractor import (
     RelationshipExtractor,
 )
-from self_cognition.core.protocols import EventStore, StateRepository
+from self_cognition.core.protocols import (
+    EvidenceRepository,
+    EventStore,
+    StateRepository,
+)
 from self_cognition.core.workspace import WorkspaceBuilder
 from self_cognition.cognition.semantic.name_extractor import NameExtractor
 from self_cognition.cognition.semantic.preference_extractor import (
@@ -30,13 +36,16 @@ from self_cognition.infrastructure.persistence.file_event_store import FileEvent
 from self_cognition.infrastructure.persistence.file_state_repository import (
     FileStateRepository,
 )
+from self_cognition.infrastructure.persistence.in_memory_evidence_repository import (
+    InMemoryEvidenceRepository,
+)
 from self_cognition.runtime.engine import CognitionEngine
-from self_cognition.runtime.reducer import StateReducer
 
 
 @dataclass(frozen=True, slots=True)
 class ApplicationContainer:
     event_store: EventStore
+    evidence_repository: EvidenceRepository
     state_repository: StateRepository
     process_event: ProcessEventService
     replay: ReplayService
@@ -47,6 +56,7 @@ class ApplicationContainer:
 def build_container(data_dir: str | Path = "data") -> ApplicationContainer:
     root = Path(data_dir)
     event_store = FileEventStore(root / "events.jsonl")
+    evidence_repository = InMemoryEvidenceRepository()
     state_repository = FileStateRepository(root / "states")
     engine = CognitionEngine(
         modules=(
@@ -59,13 +69,15 @@ def build_container(data_dir: str | Path = "data") -> ApplicationContainer:
             AffectExtractor(),
             NarrativeExtractor(),
         ),
-        reducer=StateReducer(),
+        cognitive_space=CognitiveSpaceService(StateReducer()),
     )
     return ApplicationContainer(
         event_store=event_store,
+        evidence_repository=evidence_repository,
         state_repository=state_repository,
         process_event=ProcessEventService(
             event_store=event_store,
+            evidence_repository=evidence_repository,
             state_repository=state_repository,
             engine=engine,
         ),

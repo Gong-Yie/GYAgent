@@ -1,9 +1,11 @@
-from self_cognition.core.contributions import Contribution
-from self_cognition.core.events import Event
+from self_cognition.core.contributions import CognitiveContribution, CognitionType
+from self_cognition.core.evidence import EvidenceRef
+from self_cognition.core.events import EventEnvelope
 from self_cognition.core.ids import contribution_id
 
 
 SOURCE_MODULE = "metacognition.conflict_extractor"
+MODULE_VERSION = "1"
 PREFERENCE_FIELD = "preferences.study_time"
 UNCERTAINTY_FIELD = "metacognition.uncertainties.preferences.study_time"
 CONFLICT_FIELD = "metacognition.conflicts.preferences.study_time"
@@ -16,10 +18,10 @@ class ConflictMetacognitionExtractor:
 
     subscriptions = frozenset({"user.message"})
 
-    def process(self, event: Event) -> tuple[Contribution, ...]:
-        if event.content == UNCERTAIN_STATEMENT:
+    def process(self, event: EventEnvelope) -> tuple[CognitiveContribution, ...]:
+        if event.payload.text == UNCERTAIN_STATEMENT:
             return (self._contribution(event, UNCERTAINTY_FIELD, "早上或晚上"),)
-        if event.content != CONFLICT_STATEMENT:
+        if event.payload.text != CONFLICT_STATEMENT:
             return ()
 
         return (
@@ -30,21 +32,27 @@ class ConflictMetacognitionExtractor:
 
     @staticmethod
     def _contribution(
-        event: Event,
+        event: EventEnvelope,
         target_field: str,
         value: str,
-    ) -> Contribution:
-        return Contribution(
+    ) -> CognitiveContribution:
+        cognition_type = (
+            CognitionType.PREFERENCE
+            if target_field == PREFERENCE_FIELD
+            else CognitionType.INFERENCE
+        )
+        return CognitiveContribution.set_from_event(
+            event,
             contribution_id=contribution_id(
                 event.event_id,
                 SOURCE_MODULE,
                 f"{target_field}:{value}",
             ),
-            target_subject_id=event.actor_id,
             target_field=target_field,
+            cognition_type=cognition_type,
             value=value,
             confidence=1.0,
-            evidence_event_ids=(event.event_id,),
-            source_event_id=event.event_id,
+            evidence_refs=(EvidenceRef.for_event(event),),
             source_module=SOURCE_MODULE,
+            module_version=MODULE_VERSION,
         )

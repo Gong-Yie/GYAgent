@@ -1,6 +1,5 @@
 from dataclasses import dataclass
-from uuid import UUID
-
+from self_cognition.core.evidence import EvidenceRef
 from self_cognition.core.workspace import Workspace
 
 
@@ -31,7 +30,7 @@ NARRATIVE_FIELD_PREFIX = "narrative.chapter."
 @dataclass(frozen=True, slots=True)
 class DialogueResponse:
     text: str
-    source_event_ids: tuple[UUID, ...]
+    evidence_refs: tuple[EvidenceRef, ...]
 
 
 class RuleBasedDialogueModel:
@@ -45,23 +44,23 @@ class RuleBasedDialogueModel:
                         "你的学习时间偏好存在冲突："
                         f"同时提到了{conflict.content}。"
                     ),
-                    source_event_ids=conflict.evidence_event_ids,
+                    evidence_refs=conflict.evidence_refs,
                 )
             uncertainty = by_field.get(STUDY_TIME_UNCERTAINTY_FIELD)
             if uncertainty is not None:
                 return DialogueResponse(
                     text="你还不确定更喜欢早上还是晚上学习。",
-                    source_event_ids=uncertainty.evidence_event_ids,
+                    evidence_refs=uncertainty.evidence_refs,
                 )
             for item in workspace.items:
                 if item.target_field == STUDY_TIME_FIELD:
                     return DialogueResponse(
                         text=f"你喜欢{item.content}学习。",
-                        source_event_ids=item.evidence_event_ids,
+                        evidence_refs=item.evidence_refs,
                     )
             return DialogueResponse(
                 text="我还不知道你喜欢什么时候学习。",
-                source_event_ids=(),
+                evidence_refs=(),
             )
 
         if question == EXPERIENCE_QUESTION:
@@ -73,14 +72,14 @@ class RuleBasedDialogueModel:
             if not items:
                 return DialogueResponse(
                     text="我还没有记住具体经历。",
-                    source_event_ids=(),
+                    evidence_refs=(),
                 )
             return DialogueResponse(
                 text="我记得：" + "；".join(str(item.content) for item in items),
-                source_event_ids=tuple(
-                    event_id
+                evidence_refs=tuple(
+                    evidence_ref
                     for item in items
-                    for event_id in item.evidence_event_ids
+                    for evidence_ref in item.evidence_refs
                 ),
             )
 
@@ -91,11 +90,11 @@ class RuleBasedDialogueModel:
                 if item.target_field == target_field:
                     return DialogueResponse(
                         text=f"{related_subject}是你的{item.content}。",
-                        source_event_ids=item.evidence_event_ids,
+                        evidence_refs=item.evidence_refs,
                     )
             return DialogueResponse(
                 text=f"我还不知道你和{related_subject}是什么关系。",
-                source_event_ids=(),
+                evidence_refs=(),
             )
 
         if question == IDENTITY_ROLE_QUESTION:
@@ -128,11 +127,11 @@ class RuleBasedDialogueModel:
                         "当前强度约为"
                         f"{float(content['current_intensity']):.2f}。"
                     ),
-                    source_event_ids=item.evidence_event_ids,
+                    evidence_refs=item.evidence_refs,
                 )
             return DialogueResponse(
                 text="我没有足够强的当前情感评估。",
-                source_event_ids=(),
+                evidence_refs=(),
             )
 
         if question == NARRATIVE_QUESTION:
@@ -145,7 +144,7 @@ class RuleBasedDialogueModel:
             if not chapters:
                 return DialogueResponse(
                     text="我还没有形成项目叙事。",
-                    source_event_ids=(),
+                evidence_refs=(),
                 )
             summaries = [str(item.content["summary"]) for item in chapters]
             if len(summaries) == 1:
@@ -159,16 +158,16 @@ class RuleBasedDialogueModel:
                 )
             return DialogueResponse(
                 text=f"你的项目叙事是：{narrative_text}。",
-                source_event_ids=tuple(
-                    event_id
+                evidence_refs=tuple(
+                    evidence_ref
                     for item in chapters
-                    for event_id in item.evidence_event_ids
+                    for evidence_ref in item.evidence_refs
                 ),
             )
 
         return DialogueResponse(
             text="我还不知道这个问题的答案。",
-            source_event_ids=(),
+            evidence_refs=(),
         )
 
     @staticmethod
@@ -183,6 +182,6 @@ class RuleBasedDialogueModel:
             if item.target_field == target_field:
                 return DialogueResponse(
                     text=known_template.format(item.content),
-                    source_event_ids=item.evidence_event_ids,
+                    evidence_refs=item.evidence_refs,
                 )
-        return DialogueResponse(text=unknown_text, source_event_ids=())
+        return DialogueResponse(text=unknown_text, evidence_refs=())

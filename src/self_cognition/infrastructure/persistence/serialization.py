@@ -1,33 +1,74 @@
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
+from self_cognition.core.contributions import (
+    CognitiveContribution,
+    CognitionType,
+    ContributionOperation,
+)
 from self_cognition.core.errors import (
     MalformedSerializedDataError,
     SerializationError,
     UnsupportedSchemaVersionError,
 )
-from self_cognition.core.events import Event
-from self_cognition.core.state import ConflictRecord, StateEntry, SubjectState
+from self_cognition.core.evidence import EvidenceRef, EvidenceSourceKind
+from self_cognition.core.events import (
+    EVENT_SCHEMA_VERSION,
+    EventEnvelope,
+    EventSource,
+    ModelResponsePayload,
+    ProcessingFailurePayload,
+    StateReductionPayload,
+    UserMessagePayload,
+)
+from self_cognition.core.scopes import (
+    DEFAULT_MIND_ID,
+    ConversationScope,
+    DataScope,
+    DisclosureScope,
+    MindScope,
+    SubjectKind,
+    SubjectRef,
+    SubjectScope,
+)
+from self_cognition.core.state import (
+    ConflictRecord,
+    StateAtom,
+    StateChangeRecord,
+    StateDecisionStatus,
+    SubjectState,
+)
 
 
-EVENT_SCHEMA_VERSION = 1
-STATE_SCHEMA_VERSION = 1
+STATE_SCHEMA_VERSION = 4
+LEGACY_STATE_TIME = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
-def event_to_dict(event: Event) -> dict[str, Any]:
+def event_to_dict(event: EventEnvelope) -> dict[str, Any]:
     return {
         "schema_version": EVENT_SCHEMA_VERSION,
         "event_id": str(event.event_id),
         "event_type": event.event_type,
-        "actor_id": event.actor_id,
-        "content": event.content,
+        "actor": (
+            _subject_ref_to_dict(event.actor)
+            if event.actor is not None
+            else None
+        ),
+        "subject": _subject_scope_to_dict(event.subject),
+        "payload": _event_payload_to_dict(event.payload),
         "occurred_at": event.occurred_at.isoformat(),
+        "recorded_at": event.recorded_at.isoformat(),
+        "source": event.source.value,
+        "scope": _data_scope_to_dict(event.scope),
+        "causation_id": _optional_uuid_to_string(event.causation_id),
+        "correlation_id": _optional_uuid_to_string(event.correlation_id),
+        "run_id": _optional_uuid_to_string(event.run_id),
     }
 
 
-def event_from_dict(data: object) -> Event:
+def event_from_dict(data: object) -> EventEnvelope:
     values = _require_object(data, "event")
     _require_schema(values, EVENT_SCHEMA_VERSION, "event")
     _require_keys(
@@ -36,32 +77,55 @@ def event_from_dict(data: object) -> Event:
             "schema_version",
             "event_id",
             "event_type",
-            "actor_id",
-            "content",
+            "actor",
+            "subject",
+            "payload",
             "occurred_at",
+            "recorded_at",
+            "source",
+            "scope",
+            "causation_id",
+            "correlation_id",
+            "run_id",
         },
         "event",
     )
-    try:
-        occurred_at = datetime.fromisoformat(
-            _require_string(values["occurred_at"], "event.occurred_at")
-        )
-    except ValueError as error:
-        raise MalformedSerializedDataError(
-            "event.occurred_at must be a valid ISO 8601 datetime"
-        ) from error
-    if occurred_at.tzinfo is None or occurred_at.utcoffset() is None:
-        raise MalformedSerializedDataError(
-            "event.occurred_at must include timezone information"
-        )
+    occurred_at = _require_datetime(values["occurred_at"], "event.occurred_at")
+    recorded_at = _require_datetime(values["recorded_at"], "event.recorded_at")
+    actor_value = values["actor"]
+    actor = (
+        None
+        if actor_value is None
+        else _subject_ref_from_dict(actor_value, "event.actor")
+    )
+    subject = _subject_scope_from_dict(values["subject"], "event.subject")
+    event_type = _require_string(values["event_type"], "event.event_type")
 
     try:
-        return Event(
+        return EventEnvelope(
             event_id=_require_uuid(values["event_id"], "event.event_id"),
-            event_type=_require_string(values["event_type"], "event.event_type"),
-            actor_id=_require_string(values["actor_id"], "event.actor_id"),
-            content=_require_string(values["content"], "event.content"),
+            event_type=event_type,
+            actor=actor,
+            subject=subject,
+            payload=_event_payload_from_dict(
+                event_type,
+                values["payload"],
+                "event.payload",
+            ),
             occurred_at=occurred_at,
+            recorded_at=recorded_at,
+            source=_require_event_source(values["source"], "event.source"),
+            scope=_data_scope_from_dict(values["scope"], "event.scope"),
+            causation_id=_require_optional_uuid(
+                values["causation_id"],
+                "event.causation_id",
+            ),
+            correlation_id=_require_optional_uuid(
+                values["correlation_id"],
+                "event.correlation_id",
+            ),
+            run_id=_require_optional_uuid(values["run_id"], "event.run_id"),
+            schema_version=EVENT_SCHEMA_VERSION,
         )
     except SerializationError:
         raise
@@ -69,30 +133,143 @@ def event_from_dict(data: object) -> Event:
         raise MalformedSerializedDataError("invalid event values") from error
 
 
-def event_to_json(event: Event) -> str:
+def event_to_json(event: EventEnvelope) -> str:
     return _to_json(event_to_dict(event), "event")
 
 
-def event_from_json(payload: str) -> Event:
+def event_from_json(payload: str) -> EventEnvelope:
     return event_from_dict(_from_json(payload, "event"))
+
+
+def _event_payload_to_dict(
+    payload: (
+        UserMessagePayload
+        | ModelResponsePayload
+        | StateReductionPayload
+        | ProcessingFailurePayload
+    ),
+) -> dict[str, object]:
+    if isinstance(payload, UserMessagePayload):
+        return {"text": payload.text}
+    if isinstance(payload, ModelResponsePayload):
+        return {
+            "model": payload.model,
+            "response_id": payload.response_id,
+            "raw_output": payload.raw_output,
+        }
+    if isinstance(payload, ProcessingFailurePayload):
+        return {"stage": payload.stage, "error_type": payload.error_type}
+    return {
+        "old_version": payload.old_version,
+        "new_version": payload.new_version,
+        "state_changed": payload.state_changed,
+        "applied_contribution_ids": [
+            str(contribution_id)
+            for contribution_id in payload.applied_contribution_ids
+        ],
+    }
+
+
+def _event_payload_from_dict(
+    event_type: str,
+    value: object,
+    path: str,
+) -> (
+    UserMessagePayload
+    | ModelResponsePayload
+    | StateReductionPayload
+    | ProcessingFailurePayload
+):
+    values = _require_object(value, path)
+    if event_type == "user.message":
+        _require_keys(values, {"text"}, path)
+        return UserMessagePayload(
+            _require_string(values["text"], f"{path}.text")
+        )
+    if event_type == "model.response":
+        _require_keys(values, {"model", "response_id", "raw_output"}, path)
+        return ModelResponsePayload(
+            model=_require_non_blank_string(values["model"], f"{path}.model"),
+            response_id=_require_non_blank_string(
+                values["response_id"],
+                f"{path}.response_id",
+            ),
+            raw_output=_require_non_blank_string(
+                values["raw_output"],
+                f"{path}.raw_output",
+            ),
+        )
+    if event_type == "state.reduced":
+        _require_keys(
+            values,
+            {
+                "old_version",
+                "new_version",
+                "state_changed",
+                "applied_contribution_ids",
+            },
+            path,
+        )
+        return StateReductionPayload(
+            old_version=_require_int(
+                values["old_version"],
+                f"{path}.old_version",
+            ),
+            new_version=_require_int(
+                values["new_version"],
+                f"{path}.new_version",
+            ),
+            state_changed=_require_bool(
+                values["state_changed"],
+                f"{path}.state_changed",
+            ),
+            applied_contribution_ids=_require_uuid_tuple(
+                values["applied_contribution_ids"],
+                f"{path}.applied_contribution_ids",
+            ),
+        )
+    if event_type == "processing.failed":
+        _require_keys(values, {"stage", "error_type"}, path)
+        return ProcessingFailurePayload(
+            stage=_require_non_blank_string(values["stage"], f"{path}.stage"),
+            error_type=_require_non_blank_string(
+                values["error_type"],
+                f"{path}.error_type",
+            ),
+        )
+    raise MalformedSerializedDataError(
+        "event.event_type is not supported by this schema"
+    )
 
 
 def state_to_dict(state: SubjectState) -> dict[str, Any]:
     return {
         "schema_version": STATE_SCHEMA_VERSION,
+        "mind_id": state.mind_id,
+        "subject_kind": state.subject_kind.value,
         "subject_id": state.subject_id,
         "version": state.version,
         "entries": {
             target_field: {
                 "value": entry.value,
+                "cognition_type": entry.cognition_type.value,
                 "confidence": entry.confidence,
-                "evidence_event_ids": [
-                    str(event_id) for event_id in entry.evidence_event_ids
+                "scope": _data_scope_to_dict(entry.scope),
+                "evidence_refs": [
+                    _evidence_ref_to_dict(evidence)
+                    for evidence in entry.evidence_refs
                 ],
                 "contribution_ids": [
                     str(contribution_id)
                     for contribution_id in entry.contribution_ids
                 ],
+                "created_at": entry.created_at.isoformat(),
+                "valid_from": entry.valid_from.isoformat(),
+                "expires_at": (
+                    entry.expires_at.isoformat()
+                    if entry.expires_at is not None
+                    else None
+                ),
             }
             for target_field, entry in sorted(state.entries.items())
         },
@@ -118,62 +295,175 @@ def state_to_dict(state: SubjectState) -> dict[str, Any]:
                 ),
             )
         ],
+        "changes": [
+            {
+                "contribution": _contribution_to_dict(change.contribution),
+                "status": change.status.value,
+                "reason": change.reason,
+                "old_version": change.old_version,
+                "new_version": change.new_version,
+                "decided_at": change.decided_at.isoformat(),
+            }
+            for change in state.changes
+        ],
     }
 
 
 def state_from_dict(data: object) -> SubjectState:
     values = _require_object(data, "state")
-    _require_schema(values, STATE_SCHEMA_VERSION, "state")
+    schema_version = _require_supported_state_schema(values)
+    scope_fields = (
+        {"mind_id", "subject_kind"}
+        if schema_version >= 2
+        else set()
+    )
+    change_fields = {"changes"} if schema_version == STATE_SCHEMA_VERSION else set()
     _require_keys(
         values,
         {
             "schema_version",
+            *scope_fields,
             "subject_id",
             "version",
             "entries",
             "applied_contribution_ids",
             "conflicts",
+            *change_fields,
         },
         "state",
     )
 
-    subject_id = _require_string(values["subject_id"], "state.subject_id")
+    if schema_version == 1:
+        mind_id = DEFAULT_MIND_ID
+        subject_kind = SubjectKind.USER
+    else:
+        mind_id = _require_non_blank_string(
+            values["mind_id"],
+            "state.mind_id",
+        )
+        try:
+            subject_kind = SubjectKind(
+                _require_string(values["subject_kind"], "state.subject_kind")
+            )
+        except ValueError as error:
+            raise MalformedSerializedDataError(
+                "state.subject_kind must be a supported subject kind"
+            ) from error
+
+    subject_id = _require_non_blank_string(
+        values["subject_id"],
+        "state.subject_id",
+    )
+    if subject_kind is SubjectKind.MIND and subject_id != mind_id:
+        raise MalformedSerializedDataError(
+            "state mind subject ID must match state.mind_id"
+        )
     version = _require_int(values["version"], "state.version")
+    subject_scope = SubjectScope(
+        mind=MindScope(mind_id),
+        subject=SubjectRef(subject_kind, subject_id),
+    )
     entries_value = values["entries"]
     if not isinstance(entries_value, dict):
         raise MalformedSerializedDataError("state.entries must be an object")
 
-    entries: dict[str, StateEntry] = {}
+    entries: dict[str, StateAtom] = {}
     for target_field, raw_entry in entries_value.items():
         if not isinstance(target_field, str) or not target_field.strip():
             raise MalformedSerializedDataError(
                 "state.entries keys must be non-blank strings"
             )
         entry = _require_object(raw_entry, f"state.entries[{target_field!r}]")
+        evidence_field = "evidence_refs" if schema_version >= 3 else "evidence_event_ids"
+        metadata_fields = (
+            {
+                "cognition_type",
+                "scope",
+                "created_at",
+                "valid_from",
+                "expires_at",
+            }
+            if schema_version == STATE_SCHEMA_VERSION
+            else set()
+        )
         _require_keys(
             entry,
             {
                 "value",
                 "confidence",
-                "evidence_event_ids",
+                evidence_field,
                 "contribution_ids",
+                *metadata_fields,
             },
             f"state.entries[{target_field!r}]",
         )
-        entries[target_field] = StateEntry(
+        if schema_version >= 3:
+            evidence_refs = _require_evidence_ref_tuple(
+                entry["evidence_refs"],
+                f"state.entries[{target_field!r}].evidence_refs",
+            )
+        else:
+            legacy_event_ids = _require_uuid_tuple(
+                entry["evidence_event_ids"],
+                f"state.entries[{target_field!r}].evidence_event_ids",
+            )
+            evidence_refs = tuple(
+                _legacy_event_evidence(event_id, subject_scope)
+                for event_id in legacy_event_ids
+            )
+        if schema_version == STATE_SCHEMA_VERSION:
+            try:
+                cognition_type = CognitionType(
+                    _require_string(
+                        entry["cognition_type"],
+                        f"state.entries[{target_field!r}].cognition_type",
+                    )
+                )
+            except ValueError as error:
+                raise MalformedSerializedDataError(
+                    f"state.entries[{target_field!r}].cognition_type is invalid"
+                ) from error
+            atom_scope = _data_scope_from_dict(
+                entry["scope"],
+                f"state.entries[{target_field!r}].scope",
+            )
+            created_at = _require_datetime(
+                entry["created_at"],
+                f"state.entries[{target_field!r}].created_at",
+            )
+            valid_from = _require_datetime(
+                entry["valid_from"],
+                f"state.entries[{target_field!r}].valid_from",
+            )
+            expires_at = _require_optional_datetime(
+                entry["expires_at"],
+                f"state.entries[{target_field!r}].expires_at",
+            )
+        else:
+            cognition_type = CognitionType.UNKNOWN
+            atom_scope = DataScope(
+                owner=subject_scope,
+                disclosure=DisclosureScope.PRIVATE,
+            )
+            created_at = LEGACY_STATE_TIME
+            valid_from = LEGACY_STATE_TIME
+            expires_at = None
+        entries[target_field] = StateAtom(
             value=entry["value"],
+            cognition_type=cognition_type,
             confidence=_require_float(
                 entry["confidence"],
                 f"state.entries[{target_field!r}].confidence",
             ),
-            evidence_event_ids=_require_uuid_tuple(
-                entry["evidence_event_ids"],
-                f"state.entries[{target_field!r}].evidence_event_ids",
-            ),
+            scope=atom_scope,
+            evidence_refs=evidence_refs,
             contribution_ids=_require_uuid_tuple(
                 entry["contribution_ids"],
                 f"state.entries[{target_field!r}].contribution_ids",
             ),
+            created_at=created_at,
+            valid_from=valid_from,
+            expires_at=expires_at,
         )
 
     applied_ids = frozenset(
@@ -210,12 +500,21 @@ def state_from_dict(data: object) -> SubjectState:
             )
         )
 
+    changes = (
+        _state_changes_from_list(values["changes"])
+        if schema_version == STATE_SCHEMA_VERSION
+        else ()
+    )
+
     return SubjectState(
         subject_id=subject_id,
         version=version,
         entries=entries,
         applied_contribution_ids=applied_ids,
         conflicts=frozenset(conflicts),
+        changes=changes,
+        mind_id=mind_id,
+        subject_kind=subject_kind,
     )
 
 
@@ -225,6 +524,176 @@ def state_to_json(state: SubjectState) -> str:
 
 def state_from_json(payload: str) -> SubjectState:
     return state_from_dict(_from_json(payload, "state"))
+
+
+def _contribution_to_dict(
+    contribution: CognitiveContribution,
+) -> dict[str, object]:
+    return {
+        "contribution_id": str(contribution.contribution_id),
+        "target": _subject_scope_to_dict(contribution.target),
+        "target_field": contribution.target_field,
+        "operation": contribution.operation.value,
+        "cognition_type": contribution.cognition_type.value,
+        "value": contribution.value,
+        "confidence": contribution.confidence,
+        "evidence_refs": [
+            _evidence_ref_to_dict(evidence)
+            for evidence in contribution.evidence_refs
+        ],
+        "source_module": contribution.source_module,
+        "module_version": contribution.module_version,
+        "scope": _data_scope_to_dict(contribution.scope),
+        "created_at": contribution.created_at.isoformat(),
+        "valid_from": contribution.valid_from.isoformat(),
+        "expires_at": (
+            contribution.expires_at.isoformat()
+            if contribution.expires_at is not None
+            else None
+        ),
+        "target_version": contribution.target_version,
+        "explicitly_confirmed": contribution.explicitly_confirmed,
+    }
+
+
+def _contribution_from_dict(value: object, path: str) -> CognitiveContribution:
+    values = _require_object(value, path)
+    _require_keys(
+        values,
+        {
+            "contribution_id",
+            "target",
+            "target_field",
+            "operation",
+            "cognition_type",
+            "value",
+            "confidence",
+            "evidence_refs",
+            "source_module",
+            "module_version",
+            "scope",
+            "created_at",
+            "valid_from",
+            "expires_at",
+            "target_version",
+            "explicitly_confirmed",
+        },
+        path,
+    )
+    try:
+        return CognitiveContribution(
+            contribution_id=_require_uuid(
+                values["contribution_id"],
+                f"{path}.contribution_id",
+            ),
+            target=_subject_scope_from_dict(values["target"], f"{path}.target"),
+            target_field=_require_non_blank_string(
+                values["target_field"],
+                f"{path}.target_field",
+            ),
+            operation=ContributionOperation(
+                _require_string(values["operation"], f"{path}.operation")
+            ),
+            cognition_type=CognitionType(
+                _require_string(
+                    values["cognition_type"],
+                    f"{path}.cognition_type",
+                )
+            ),
+            value=values["value"],
+            confidence=_require_float(values["confidence"], f"{path}.confidence"),
+            evidence_refs=_require_evidence_ref_tuple(
+                values["evidence_refs"],
+                f"{path}.evidence_refs",
+            ),
+            source_module=_require_non_blank_string(
+                values["source_module"],
+                f"{path}.source_module",
+            ),
+            module_version=_require_non_blank_string(
+                values["module_version"],
+                f"{path}.module_version",
+            ),
+            scope=_data_scope_from_dict(values["scope"], f"{path}.scope"),
+            created_at=_require_datetime(
+                values["created_at"],
+                f"{path}.created_at",
+            ),
+            valid_from=_require_datetime(
+                values["valid_from"],
+                f"{path}.valid_from",
+            ),
+            expires_at=_require_optional_datetime(
+                values["expires_at"],
+                f"{path}.expires_at",
+            ),
+            target_version=_require_optional_int(
+                values["target_version"],
+                f"{path}.target_version",
+            ),
+            explicitly_confirmed=_require_bool(
+                values["explicitly_confirmed"],
+                f"{path}.explicitly_confirmed",
+            ),
+        )
+    except SerializationError:
+        raise
+    except Exception as error:
+        raise MalformedSerializedDataError(f"invalid {path} values") from error
+
+
+def _state_changes_from_list(value: object) -> tuple[StateChangeRecord, ...]:
+    if not isinstance(value, list):
+        raise MalformedSerializedDataError("state.changes must be an array")
+    changes: list[StateChangeRecord] = []
+    for index, raw_change in enumerate(value):
+        path = f"state.changes[{index}]"
+        change = _require_object(raw_change, path)
+        _require_keys(
+            change,
+            {
+                "contribution",
+                "status",
+                "reason",
+                "old_version",
+                "new_version",
+                "decided_at",
+            },
+            path,
+        )
+        try:
+            changes.append(
+                StateChangeRecord(
+                    contribution=_contribution_from_dict(
+                        change["contribution"],
+                        f"{path}.contribution",
+                    ),
+                    status=StateDecisionStatus(
+                        _require_string(change["status"], f"{path}.status")
+                    ),
+                    reason=_require_non_blank_string(
+                        change["reason"],
+                        f"{path}.reason",
+                    ),
+                    old_version=_require_int(
+                        change["old_version"],
+                        f"{path}.old_version",
+                    ),
+                    new_version=_require_int(
+                        change["new_version"],
+                        f"{path}.new_version",
+                    ),
+                    decided_at=_require_datetime(
+                        change["decided_at"],
+                        f"{path}.decided_at",
+                    ),
+                )
+            )
+        except SerializationError:
+            raise
+        except Exception as error:
+            raise MalformedSerializedDataError(f"invalid {path} values") from error
+    return tuple(changes)
 
 
 def _to_json(data: dict[str, Any], kind: str) -> str:
@@ -272,6 +741,19 @@ def _require_schema(values: dict[str, Any], expected: int, path: str) -> None:
         )
 
 
+def _require_supported_state_schema(values: dict[str, Any]) -> int:
+    version = values.get("schema_version")
+    if version in (1, 2, 3, STATE_SCHEMA_VERSION) and not isinstance(version, bool):
+        return version
+    if isinstance(version, int) and not isinstance(version, bool):
+        raise UnsupportedSchemaVersionError(
+            f"unsupported state schema version: {version}"
+        )
+    raise MalformedSerializedDataError(
+        "state.schema_version must be 1, 2, 3, or 4"
+    )
+
+
 def _require_keys(
     values: dict[str, Any],
     expected: set[str],
@@ -297,9 +779,28 @@ def _require_string(value: object, path: str) -> str:
     return value
 
 
+def _require_non_blank_string(value: object, path: str) -> str:
+    text = _require_string(value, path)
+    if not text.strip():
+        raise MalformedSerializedDataError(f"{path} must not be blank")
+    return text
+
+
 def _require_int(value: object, path: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise MalformedSerializedDataError(f"{path} must be an integer")
+    return value
+
+
+def _require_optional_int(value: object, path: str) -> int | None:
+    if value is None:
+        return None
+    return _require_int(value, path)
+
+
+def _require_bool(value: object, path: str) -> bool:
+    if not isinstance(value, bool):
+        raise MalformedSerializedDataError(f"{path} must be a boolean")
     return value
 
 
@@ -323,6 +824,267 @@ def _require_uuid_tuple(value: object, path: str) -> tuple[UUID, ...]:
         _require_uuid(item, f"{path}[{index}]")
         for index, item in enumerate(value)
     )
+
+
+def _require_optional_uuid(value: object, path: str) -> UUID | None:
+    if value is None:
+        return None
+    return _require_uuid(value, path)
+
+
+def _optional_uuid_to_string(value: UUID | None) -> str | None:
+    return str(value) if value is not None else None
+
+
+def _require_datetime(value: object, path: str) -> datetime:
+    try:
+        result = datetime.fromisoformat(_require_string(value, path))
+    except ValueError as error:
+        raise MalformedSerializedDataError(
+            f"{path} must be a valid ISO 8601 datetime"
+        ) from error
+    if result.tzinfo is None or result.utcoffset() is None:
+        raise MalformedSerializedDataError(
+            f"{path} must include timezone information"
+        )
+    return result
+
+
+def _require_optional_datetime(
+    value: object,
+    path: str,
+) -> datetime | None:
+    if value is None:
+        return None
+    return _require_datetime(value, path)
+
+
+def _require_event_source(value: object, path: str) -> EventSource:
+    try:
+        return EventSource(_require_string(value, path))
+    except ValueError as error:
+        raise MalformedSerializedDataError(
+            f"{path} must be a supported event source"
+        ) from error
+
+
+def _subject_ref_to_dict(subject: SubjectRef) -> dict[str, str]:
+    return {"kind": subject.kind.value, "subject_id": subject.subject_id}
+
+
+def _subject_ref_from_dict(value: object, path: str) -> SubjectRef:
+    values = _require_object(value, path)
+    _require_keys(values, {"kind", "subject_id"}, path)
+    try:
+        kind = SubjectKind(_require_string(values["kind"], f"{path}.kind"))
+        return SubjectRef(
+            kind=kind,
+            subject_id=_require_non_blank_string(
+                values["subject_id"],
+                f"{path}.subject_id",
+            ),
+        )
+    except ValueError as error:
+        raise MalformedSerializedDataError(
+            f"{path}.kind must be a supported subject kind"
+        ) from error
+
+
+def _subject_scope_to_dict(subject: SubjectScope) -> dict[str, str]:
+    return {
+        "mind_id": subject.mind.mind_id,
+        "kind": subject.subject.kind.value,
+        "subject_id": subject.subject.subject_id,
+    }
+
+
+def _subject_scope_from_dict(value: object, path: str) -> SubjectScope:
+    values = _require_object(value, path)
+    _require_keys(values, {"mind_id", "kind", "subject_id"}, path)
+    try:
+        return SubjectScope(
+            mind=MindScope(
+                _require_non_blank_string(
+                    values["mind_id"],
+                    f"{path}.mind_id",
+                )
+            ),
+            subject=SubjectRef(
+                SubjectKind(
+                    _require_string(values["kind"], f"{path}.kind")
+                ),
+                _require_non_blank_string(
+                    values["subject_id"],
+                    f"{path}.subject_id",
+                ),
+            ),
+        )
+    except ValueError as error:
+        raise MalformedSerializedDataError(
+            f"{path}.kind must be a supported subject kind"
+        ) from error
+
+
+def _data_scope_to_dict(scope: DataScope) -> dict[str, object]:
+    conversation = scope.conversation
+    return {
+        "owner": _subject_scope_to_dict(scope.owner),
+        "disclosure": scope.disclosure.value,
+        "conversation": (
+            {
+                "conversation_id": conversation.conversation_id,
+                "group_id": conversation.group_id,
+            }
+            if conversation is not None
+            else None
+        ),
+    }
+
+
+def _data_scope_from_dict(value: object, path: str) -> DataScope:
+    values = _require_object(value, path)
+    _require_keys(values, {"owner", "disclosure", "conversation"}, path)
+    conversation_value = values["conversation"]
+    conversation: ConversationScope | None = None
+    if conversation_value is not None:
+        raw_conversation = _require_object(
+            conversation_value,
+            f"{path}.conversation",
+        )
+        _require_keys(
+            raw_conversation,
+            {"conversation_id", "group_id"},
+            f"{path}.conversation",
+        )
+        group_id_value = raw_conversation["group_id"]
+        conversation = ConversationScope(
+            conversation_id=_require_non_blank_string(
+                raw_conversation["conversation_id"],
+                f"{path}.conversation.conversation_id",
+            ),
+            group_id=(
+                None
+                if group_id_value is None
+                else _require_non_blank_string(
+                    group_id_value,
+                    f"{path}.conversation.group_id",
+                )
+            ),
+        )
+    try:
+        disclosure = DisclosureScope(
+            _require_string(values["disclosure"], f"{path}.disclosure")
+        )
+    except ValueError as error:
+        raise MalformedSerializedDataError(
+            f"{path}.disclosure must be a supported disclosure scope"
+        ) from error
+    return DataScope(
+        owner=_subject_scope_from_dict(values["owner"], f"{path}.owner"),
+        disclosure=disclosure,
+        conversation=conversation,
+    )
+
+
+def _evidence_ref_to_dict(evidence: EvidenceRef) -> dict[str, object]:
+    return {
+        "evidence_id": str(evidence.evidence_id),
+        "source_kind": evidence.source_kind.value,
+        "source_ref": evidence.source_ref,
+        "scope": _data_scope_to_dict(evidence.scope),
+        "locator": evidence.locator,
+        "excerpt": evidence.excerpt,
+        "observed_at": (
+            evidence.observed_at.isoformat()
+            if evidence.observed_at is not None
+            else None
+        ),
+        "reliability": evidence.reliability,
+    }
+
+
+def _evidence_ref_from_dict(value: object, path: str) -> EvidenceRef:
+    values = _require_object(value, path)
+    _require_keys(
+        values,
+        {
+            "evidence_id",
+            "source_kind",
+            "source_ref",
+            "scope",
+            "locator",
+            "excerpt",
+            "observed_at",
+            "reliability",
+        },
+        path,
+    )
+    try:
+        source_kind = EvidenceSourceKind(
+            _require_string(values["source_kind"], f"{path}.source_kind")
+        )
+    except ValueError as error:
+        raise MalformedSerializedDataError(
+            f"{path}.source_kind must be a supported evidence source kind"
+        ) from error
+    locator = values["locator"]
+    excerpt = values["excerpt"]
+    reliability_value = values["reliability"]
+    try:
+        return EvidenceRef(
+            evidence_id=_require_uuid(
+                values["evidence_id"],
+                f"{path}.evidence_id",
+            ),
+            source_kind=source_kind,
+            source_ref=_require_non_blank_string(
+                values["source_ref"],
+                f"{path}.source_ref",
+            ),
+            scope=_data_scope_from_dict(values["scope"], f"{path}.scope"),
+            locator=(
+                None
+                if locator is None
+                else _require_non_blank_string(locator, f"{path}.locator")
+            ),
+            excerpt=(
+                None
+                if excerpt is None
+                else _require_non_blank_string(excerpt, f"{path}.excerpt")
+            ),
+            observed_at=_require_optional_datetime(
+                values["observed_at"],
+                f"{path}.observed_at",
+            ),
+            reliability=(
+                None
+                if reliability_value is None
+                else _require_float(reliability_value, f"{path}.reliability")
+            ),
+        )
+    except SerializationError:
+        raise
+    except Exception as error:
+        raise MalformedSerializedDataError(f"invalid {path} values") from error
+
+
+def _require_evidence_ref_tuple(
+    value: object,
+    path: str,
+) -> tuple[EvidenceRef, ...]:
+    if not isinstance(value, list):
+        raise MalformedSerializedDataError(f"{path} must be an array")
+    return tuple(
+        _evidence_ref_from_dict(item, f"{path}[{index}]")
+        for index, item in enumerate(value)
+    )
+
+
+def _legacy_event_evidence(
+    event_id: UUID,
+    subject: SubjectScope,
+) -> EvidenceRef:
+    return EvidenceRef.for_event_id(event_id, subject)
 
 
 def _reject_json_constant(value: str, kind: str) -> None:

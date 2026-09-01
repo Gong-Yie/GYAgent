@@ -43,7 +43,7 @@ def test_cognitive_module_contract(
     assert isinstance(first[0], Contribution)
     assert first[0].target_field == target_field
     assert first[0].value == expected_value
-    assert first[0].source_event_id == event.event_id
+    assert first[0].evidence_refs[0].evidence_id == event.event_id
 
 
 @pytest.mark.parametrize("module", [PreferenceExtractor(), NameExtractor()])

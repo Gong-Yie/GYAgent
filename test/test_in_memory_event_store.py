@@ -8,26 +8,30 @@ from self_cognition.infrastructure.persistence.in_memory_event_store import (
 
 
 def make_event(event_id: int, actor_id: str, content: str) -> Event:
-    return Event(
+    return Event.user_message(
+        actor_id,
+        content,
         event_id=UUID(int=event_id),
-        event_type="user.message",
-        actor_id=actor_id,
-        content=content,
-        occurred_at=datetime(2026, 8, 13, event_id, tzinfo=timezone.utc),
+        clock=FixedClock(datetime(2026, 8, 13, event_id, tzinfo=timezone.utc)),
     )
 
 
-def test_appends_event_and_reports_membership():
+class FixedClock:
+    def __init__(self, value: datetime) -> None:
+        self._value = value
+
+    def now(self) -> datetime:
+        return self._value
+
+
+def test_appends_event_for_its_subject():
     store = InMemoryEventStore()
     event = make_event(1, "user-1", "第一条消息")
 
-    assert not store.contains(event.event_id)
-
     store.append(event)
 
-    assert store.contains(event.event_id)
-    assert store.read_all() == (event,)
-    assert isinstance(store.read_all(), tuple)
+    assert store.read_by_subject(event.subject) == (event,)
+    assert isinstance(store.read_by_subject(event.subject), tuple)
 
 
 def test_preserves_append_order():
@@ -38,7 +42,7 @@ def test_preserves_append_order():
     store.append(first)
     store.append(second)
 
-    assert store.read_all() == (first, second)
+    assert store.read_by_subject(first.subject) == (first, second)
 
 
 def test_ignores_duplicate_id_and_preserves_first_event():
@@ -49,7 +53,7 @@ def test_ignores_duplicate_id_and_preserves_first_event():
     store.append(first)
     store.append(duplicate)
 
-    assert store.read_all() == (first,)
+    assert store.read_by_subject(first.subject) == (first,)
 
 
 def test_reads_events_by_subject_in_append_order():
@@ -62,8 +66,8 @@ def test_reads_events_by_subject_in_append_order():
     store.append(other_user_event)
     store.append(second_user_event)
 
-    assert store.read_by_subject("user-1") == (
+    assert store.read_by_subject(first_user_event.subject) == (
         first_user_event,
         second_user_event,
     )
-    assert store.read_by_subject("missing-user") == ()
+    assert store.read_by_subject(make_event(4, "missing-user", "x").subject) == ()

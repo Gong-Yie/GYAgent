@@ -1,7 +1,7 @@
 from uuid import NAMESPACE_URL, uuid5
 
 from self_cognition.cognition.semantic.name_extractor import NameExtractor
-from self_cognition.core.contributions import Contribution
+from self_cognition.core.contributions import CognitionType, Contribution
 from self_cognition.core.events import Event
 
 
@@ -17,11 +17,11 @@ def test_extracts_supported_name_statement():
         NAMESPACE_URL,
         f"{event.event_id}:semantic.name_extractor:profile.name",
     )
-    assert contribution.target_subject_id == "user-1"
+    assert contribution.target == event.subject
     assert contribution.target_field == "profile.name"
+    assert contribution.cognition_type is CognitionType.FACT
     assert contribution.value == "小明"
-    assert contribution.evidence_event_ids == (event.event_id,)
-    assert contribution.source_event_id == event.event_id
+    assert contribution.evidence_refs[0].evidence_id == event.event_id
     assert contribution.source_module == "semantic.name_extractor"
 
 

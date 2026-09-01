@@ -8,6 +8,7 @@ from self_cognition.cognition.episodic.memory_extractor import (
 from self_cognition.cognition.narrative.narrative_extractor import (
     NarrativeExtractor,
 )
+from self_cognition.core.contributions import CognitionType
 from self_cognition.core.events import Event
 from self_cognition.core.state import SubjectState
 from self_cognition.core.workspace import WorkspaceBuilder
@@ -20,24 +21,37 @@ from self_cognition.infrastructure.persistence.serialization import (
     state_to_json,
 )
 from self_cognition.runtime.engine import CognitionEngine
-from self_cognition.runtime.reducer import StateReducer
+from self_cognition.blackboard.reducer import StateReducer
+from self_cognition.blackboard.service import CognitiveSpaceService
 
 
 QUESTION = "我的项目经历如何发展？"
 
 
 def make_event(event_id: int, content: str) -> Event:
-    return Event(
+    return Event.user_message(
+        "user-1",
+        content,
         event_id=UUID(int=event_id),
-        event_type="user.message",
-        actor_id="user-1",
-        content=content,
-        occurred_at=datetime(2026, 8, 13, event_id, tzinfo=timezone.utc),
+        clock=FixedClock(
+            datetime(2026, 8, 13, event_id, tzinfo=timezone.utc)
+        ),
     )
 
 
+class FixedClock:
+    def __init__(self, value: datetime) -> None:
+        self._value = value
+
+    def now(self) -> datetime:
+        return self._value
+
+
 def make_engine() -> CognitionEngine:
-    return CognitionEngine((NarrativeExtractor(),), StateReducer())
+    return CognitionEngine(
+        (NarrativeExtractor(),),
+        CognitiveSpaceService(StateReducer()),
+    )
 
 
 def test_extracts_a_deterministic_evidenced_narrative_chapter():
@@ -53,6 +67,7 @@ def test_extracts_a_deterministic_evidenced_narrative_chapter():
     assert contribution.target_field.startswith(
         "narrative.chapter.2026-08-13T01:00:00+00:00."
     )
+    assert contribution.cognition_type is CognitionType.INFERENCE
     assert contribution.value == {
         "theme": "研究项目",
         "stage": "启动",
@@ -60,8 +75,7 @@ def test_extracts_a_deterministic_evidenced_narrative_chapter():
         "occurred_at": event.occurred_at.isoformat(),
     }
     assert contribution.confidence == 1.0
-    assert contribution.evidence_event_ids == (event.event_id,)
-    assert contribution.source_event_id == event.event_id
+    assert contribution.evidence_refs[0].evidence_id == event.event_id
 
 
 def test_unrelated_or_narrative_question_events_are_ignored():
@@ -88,7 +102,7 @@ def test_existing_chapters_form_an_ordered_project_narrative_with_sources():
     assert response.text == (
         "你的项目叙事是：先是开始准备研究项目，后来完成研究项目。"
     )
-    assert response.source_event_ids == (
+    assert tuple(ref.evidence_id for ref in response.evidence_refs) == (
         start_event.event_id,
         finish_event.event_id,
     )
@@ -100,33 +114,34 @@ def test_narrative_is_an_explanation_layer_and_does_not_invent_unknown_history()
 
     assert workspace.items == ()
     assert response.text == "我还没有形成项目叙事。"
-    assert response.source_event_ids == ()
+    assert response.evidence_refs == ()
 
 
 def test_narrative_module_can_be_disabled_without_affecting_state():
     event = make_event(6, "我开始准备研究项目")
     old_state = SubjectState.empty("user-1")
 
-    state = CognitionEngine((), StateReducer()).process(event, old_state)
+    state = CognitionEngine(
+        (),
+        CognitiveSpaceService(StateReducer()),
+    ).process(event, old_state)
 
     assert state is old_state
     assert not any(field.startswith("narrative.") for field in state.entries)
 
 
 def test_narrative_state_is_isolated_between_subjects():
-    first_event = Event(
+    first_event = Event.user_message(
+        "user-1",
+        "我开始准备研究项目",
         event_id=UUID(int=20),
-        event_type="user.message",
-        actor_id="user-1",
-        content="我开始准备研究项目",
-        occurred_at=datetime(2026, 8, 13, 12, tzinfo=timezone.utc),
+        clock=FixedClock(datetime(2026, 8, 13, 12, tzinfo=timezone.utc)),
     )
-    second_event = Event(
+    second_event = Event.user_message(
+        "user-2",
+        "我完成了研究项目",
         event_id=UUID(int=21),
-        event_type="user.message",
-        actor_id="user-2",
-        content="我完成了研究项目",
-        occurred_at=datetime(2026, 8, 13, 13, tzinfo=timezone.utc),
+        clock=FixedClock(datetime(2026, 8, 13, 13, tzinfo=timezone.utc)),
     )
     engine = make_engine()
 
@@ -140,16 +155,15 @@ def test_narrative_state_is_isolated_between_subjects():
 
 
 def test_narrative_and_episodic_modules_can_record_the_same_event():
-    event = Event(
+    event = Event.user_message(
+        "user-1",
+        "今天我开始准备研究项目",
         event_id=UUID(int=22),
-        event_type="user.message",
-        actor_id="user-1",
-        content="今天我开始准备研究项目",
-        occurred_at=datetime(2026, 8, 13, 14, tzinfo=timezone.utc),
+        clock=FixedClock(datetime(2026, 8, 13, 14, tzinfo=timezone.utc)),
     )
     engine = CognitionEngine(
         (EpisodicMemoryExtractor(), NarrativeExtractor()),
-        StateReducer(),
+        CognitiveSpaceService(StateReducer()),
     )
 
     state = engine.process(event, SubjectState.empty("user-1"))
@@ -169,8 +183,8 @@ def test_narrative_state_roundtrips_and_replays_deterministically():
         store.append(event)
 
     replay = ReplayService(store, make_engine())
-    first = replay.replay("user-1")
-    second = replay.replay("user-1")
+    first = replay.replay(events[0].subject)
+    second = replay.replay(events[0].subject)
 
     assert second == first
     assert state_from_json(state_to_json(first)) == first

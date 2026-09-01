@@ -1,15 +1,21 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from self_cognition.core.contributions import Contribution
+from self_cognition.core.contributions import (
+    CognitiveContribution,
+    CognitionType,
+    ContributionOperation,
+)
+from self_cognition.core.evidence import EvidenceRef
 from self_cognition.core.indexes import WorkspaceIndex
+from self_cognition.core.scopes import DataScope, DisclosureScope, SubjectScope
 from self_cognition.core.state import SubjectState
 from self_cognition.core.workspace import WorkspaceBuilder
 from self_cognition.infrastructure.persistence.serialization import (
     state_from_json,
     state_to_json,
 )
-from self_cognition.runtime.reducer import StateReducer
+from self_cognition.blackboard.reducer import StateReducer
 
 
 def make_contribution(
@@ -17,17 +23,24 @@ def make_contribution(
     field: str,
     value: object,
     event_id: int,
-) -> Contribution:
+) -> CognitiveContribution:
     event_uuid = UUID(int=event_id)
-    return Contribution(
+    subject = SubjectScope.legacy_user("user-1")
+    return CognitiveContribution(
         contribution_id=UUID(int=contribution_id),
-        target_subject_id="user-1",
+        target=subject,
         target_field=field,
+        operation=ContributionOperation.SET,
+        cognition_type=CognitionType.FACT,
         value=value,
         confidence=1.0,
-        evidence_event_ids=(event_uuid,),
-        source_event_id=event_uuid,
+        evidence_refs=(EvidenceRef.for_event_id(event_uuid, subject),),
         source_module="test.indexing",
+        module_version="1",
+        scope=DataScope(subject, DisclosureScope.PRIVATE),
+        created_at=datetime(2026, 9, 1, tzinfo=timezone.utc),
+        valid_from=datetime(2026, 9, 1, tzinfo=timezone.utc),
+        target_version=0,
     )
 
 
@@ -73,6 +86,7 @@ def make_state() -> SubjectState:
             ),
             make_contribution(4, "profile.name", "小明", 4),
         ),
+        decided_at=datetime(2026, 9, 1, tzinfo=timezone.utc),
     )
 
 

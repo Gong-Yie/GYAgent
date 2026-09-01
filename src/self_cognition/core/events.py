@@ -1,41 +1,291 @@
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 from uuid import UUID
 
 from self_cognition.core.errors import ContractValidationError
 from self_cognition.core.ids import new_event_id
+from self_cognition.core.scopes import (
+    ConversationScope,
+    DataScope,
+    DisclosureScope,
+    SubjectRef,
+    SubjectScope,
+    normalize_subject_scope,
+)
 from self_cognition.core.time import Clock, SYSTEM_CLOCK
 
+
+EVENT_SCHEMA_VERSION = 2
+
+
+class EventSource(str, Enum):
+    USER = "user"
+    TOOL = "tool"
+    MODEL = "model"
+    SYSTEM = "system"
+
+
 @dataclass(frozen=True, slots=True)
-class Event:
-    event_id: UUID
-    event_type: str
-    actor_id: str
-    content: str
-    occurred_at: datetime
+class UserMessagePayload:
+    text: str
 
     def __post_init__(self) -> None:
-        if not self.event_type.strip():
+        if not isinstance(self.text, str) or not self.text.strip():
+            raise ContractValidationError("user message text must not be blank")
+
+
+@dataclass(frozen=True, slots=True)
+class ModelResponsePayload:
+    model: str
+    response_id: str
+    raw_output: str
+
+    def __post_init__(self) -> None:
+        _require_non_blank(self.model, "model")
+        _require_non_blank(self.response_id, "response_id")
+        _require_non_blank(self.raw_output, "raw_output")
+
+
+@dataclass(frozen=True, slots=True)
+class StateReductionPayload:
+    old_version: int
+    new_version: int
+    state_changed: bool
+    applied_contribution_ids: tuple[UUID, ...]
+
+    def __post_init__(self) -> None:
+        if self.old_version < 0 or self.new_version < self.old_version:
+            raise ContractValidationError("state reduction versions are invalid")
+        if not isinstance(self.state_changed, bool):
+            raise ContractValidationError("state_changed must be a boolean")
+        if self.state_changed != (self.new_version != self.old_version):
+            raise ContractValidationError(
+                "state_changed must match the version change"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessingFailurePayload:
+    stage: str
+    error_type: str
+
+    def __post_init__(self) -> None:
+        _require_non_blank(self.stage, "stage")
+        _require_non_blank(self.error_type, "error_type")
+
+
+EventPayload = (
+    UserMessagePayload
+    | ModelResponsePayload
+    | StateReductionPayload
+    | ProcessingFailurePayload
+)
+
+
+@dataclass(frozen=True, slots=True)
+class EventEnvelope:
+    event_id: UUID
+    event_type: str
+    actor: SubjectRef | None
+    subject: SubjectScope
+    payload: EventPayload
+    occurred_at: datetime
+    recorded_at: datetime
+    source: EventSource
+    scope: DataScope
+    causation_id: UUID | None = None
+    correlation_id: UUID | None = None
+    run_id: UUID | None = None
+    schema_version: int = EVENT_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.event_id, UUID):
+            raise ContractValidationError("event_id must be a UUID")
+        if not isinstance(self.event_type, str) or not self.event_type.strip():
             raise ContractValidationError("event_type must not be blank")
-        if not self.actor_id.strip():
-            raise ContractValidationError("actor_id must not be blank")
-        if not self.content.strip():
-            raise ContractValidationError("content must not be blank")
-        if self.occurred_at.tzinfo is None or self.occurred_at.utcoffset() is None:
-            raise ContractValidationError("occurred_at must include timezone information")
+        if not isinstance(self.subject, SubjectScope):
+            raise ContractValidationError("subject must be a SubjectScope")
+        if self.actor is not None and not isinstance(self.actor, SubjectRef):
+            raise ContractValidationError("actor must be a SubjectRef or None")
+        expected_payloads = {
+            "user.message": UserMessagePayload,
+            "model.response": ModelResponsePayload,
+            "state.reduced": StateReductionPayload,
+            "processing.failed": ProcessingFailurePayload,
+        }
+        payload_type = expected_payloads.get(self.event_type)
+        if payload_type is None or not isinstance(self.payload, payload_type):
+            raise ContractValidationError(
+                "payload type does not match event_type"
+            )
+        _require_aware(self.occurred_at, "occurred_at")
+        _require_aware(self.recorded_at, "recorded_at")
+        if not isinstance(self.source, EventSource):
+            raise ContractValidationError("source must be an EventSource")
+        if not isinstance(self.scope, DataScope):
+            raise ContractValidationError("scope must be a DataScope")
+        if self.scope.owner != self.subject:
+            raise ContractValidationError("scope owner must match event subject")
+        if self.schema_version != EVENT_SCHEMA_VERSION:
+            raise ContractValidationError(
+                f"schema_version must be {EVENT_SCHEMA_VERSION}"
+            )
+        if self.event_type == "user.message":
+            if self.source is not EventSource.USER:
+                raise ContractValidationError("user.message source must be user")
+            if self.actor != self.subject.subject:
+                raise ContractValidationError(
+                    "user.message actor must match its subject"
+                )
+        else:
+            expected_source = (
+                EventSource.MODEL
+                if self.event_type == "model.response"
+                else EventSource.SYSTEM
+            )
+            if self.source is not expected_source:
+                raise ContractValidationError(
+                    "event source does not match event_type"
+                )
+            if self.actor is not None:
+                raise ContractValidationError(
+                    "model and system events must not have a domain actor"
+                )
 
     @classmethod
     def user_message(
         cls,
-        actor_id: str,
+        actor: SubjectScope | str,
         content: str,
         *,
+        event_id: UUID | None = None,
         clock: Clock = SYSTEM_CLOCK,
-    ) -> "Event":
+        disclosure: DisclosureScope = DisclosureScope.PRIVATE,
+        conversation: ConversationScope | None = None,
+        correlation_id: UUID | None = None,
+        causation_id: UUID | None = None,
+        run_id: UUID | None = None,
+    ) -> "EventEnvelope":
+        actor_scope = normalize_subject_scope(actor)
+        occurred_at = clock.now()
+        recorded_at = clock.now()
+        return cls(
+            event_id=event_id or new_event_id(),
+            event_type="user.message",
+            actor=actor_scope.subject,
+            subject=actor_scope,
+            payload=UserMessagePayload(content),
+            occurred_at=occurred_at,
+            recorded_at=recorded_at,
+            source=EventSource.USER,
+            scope=DataScope(
+                owner=actor_scope,
+                disclosure=disclosure,
+                conversation=conversation,
+            ),
+            causation_id=causation_id,
+            correlation_id=correlation_id,
+            run_id=run_id,
+        )
+
+    @classmethod
+    def processing_failed(
+        cls,
+        cause: "EventEnvelope",
+        *,
+        stage: str,
+        error_type: str,
+        clock: Clock,
+        run_id: UUID,
+        correlation_id: UUID,
+    ) -> "EventEnvelope":
+        now = clock.now()
         return cls(
             event_id=new_event_id(),
-            event_type="user.message",
-            actor_id=actor_id,
-            content=content,
-            occurred_at=clock.now(),
+            event_type="processing.failed",
+            actor=None,
+            subject=cause.subject,
+            payload=ProcessingFailurePayload(stage, error_type),
+            occurred_at=now,
+            recorded_at=now,
+            source=EventSource.SYSTEM,
+            scope=cause.scope,
+            causation_id=cause.event_id,
+            correlation_id=correlation_id,
+            run_id=run_id,
         )
+
+    @classmethod
+    def model_response(
+        cls,
+        cause: "EventEnvelope",
+        *,
+        model: str,
+        response_id: str,
+        raw_output: str,
+        clock: Clock,
+        run_id: UUID,
+        correlation_id: UUID,
+    ) -> "EventEnvelope":
+        now = clock.now()
+        return cls(
+            event_id=new_event_id(),
+            event_type="model.response",
+            actor=None,
+            subject=cause.subject,
+            payload=ModelResponsePayload(model, response_id, raw_output),
+            occurred_at=now,
+            recorded_at=now,
+            source=EventSource.MODEL,
+            scope=cause.scope,
+            causation_id=cause.event_id,
+            correlation_id=correlation_id,
+            run_id=run_id,
+        )
+
+    @classmethod
+    def state_reduced(
+        cls,
+        cause: "EventEnvelope",
+        payload: StateReductionPayload,
+        *,
+        clock: Clock,
+        run_id: UUID,
+        correlation_id: UUID,
+    ) -> "EventEnvelope":
+        now = clock.now()
+        return cls(
+            event_id=new_event_id(),
+            event_type="state.reduced",
+            actor=None,
+            subject=cause.subject,
+            payload=payload,
+            occurred_at=now,
+            recorded_at=now,
+            source=EventSource.SYSTEM,
+            scope=cause.scope,
+            causation_id=cause.event_id,
+            correlation_id=correlation_id,
+            run_id=run_id,
+        )
+
+
+# Compatibility import only. New code should name the envelope explicitly.
+Event = EventEnvelope
+
+
+def _require_aware(value: datetime, name: str) -> None:
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+        or value.utcoffset() is None
+    ):
+        raise ContractValidationError(
+            f"{name} must include timezone information"
+        )
+
+
+def _require_non_blank(value: str, name: str) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise ContractValidationError(f"{name} must not be blank")

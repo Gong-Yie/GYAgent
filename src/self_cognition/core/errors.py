@@ -10,6 +10,10 @@ class SubjectMismatchError(CognitionError):
     """Raised when data is applied to a different subject."""
 
 
+class ScopeMismatchError(CognitionError):
+    """Raised when data is accessed from a different mind scope."""
+
+
 class VersionConflictError(CognitionError):
     """Raised when a state save uses a stale or invalid version."""
 

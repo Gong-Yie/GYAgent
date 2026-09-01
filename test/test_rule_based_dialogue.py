@@ -6,6 +6,7 @@ from self_cognition.cognition.semantic.preference_extractor import (
     PreferenceExtractor,
 )
 from self_cognition.core.events import Event
+from self_cognition.core.evidence import EvidenceRef
 from self_cognition.core.workspace import Workspace, WorkspaceBuilder, WorkspaceItem
 from self_cognition.executive.dialogue.rule_based import (
     DialogueResponse,
@@ -14,11 +15,15 @@ from self_cognition.executive.dialogue.rule_based import (
 from self_cognition.infrastructure.persistence.in_memory_event_store import (
     InMemoryEventStore,
 )
+from self_cognition.infrastructure.persistence.in_memory_evidence_repository import (
+    InMemoryEvidenceRepository,
+)
 from self_cognition.infrastructure.persistence.in_memory_state_repository import (
     InMemoryStateRepository,
 )
 from self_cognition.runtime.engine import CognitionEngine
-from self_cognition.runtime.reducer import StateReducer
+from self_cognition.blackboard.reducer import StateReducer
+from self_cognition.blackboard.service import CognitiveSpaceService
 from self_cognition.runtime.run_context import RunContext
 
 
@@ -29,10 +34,11 @@ def test_answers_from_the_remembered_preference_with_its_source():
     event = Event.user_message("user-1", "我喜欢晚上学习")
     service = ProcessEventService(
         event_store=InMemoryEventStore(),
+        evidence_repository=InMemoryEvidenceRepository(),
         state_repository=InMemoryStateRepository(),
         engine=CognitionEngine(
             modules=(PreferenceExtractor(),),
-            reducer=StateReducer(),
+            cognitive_space=CognitiveSpaceService(StateReducer()),
         ),
     )
     result = service.process(
@@ -51,7 +57,7 @@ def test_answers_from_the_remembered_preference_with_its_source():
 
     assert response == DialogueResponse(
         text="你喜欢晚上学习。",
-        source_event_ids=(event.event_id,),
+        evidence_refs=(EvidenceRef.for_event(event),),
     )
     assert "晚上" in response.text
 
@@ -66,7 +72,7 @@ def test_says_it_does_not_know_when_the_workspace_is_empty():
     response = RuleBasedDialogueModel().respond(QUESTION, workspace)
 
     assert response.text == "我还不知道你喜欢什么时候学习。"
-    assert response.source_event_ids == ()
+    assert response.evidence_refs == ()
 
 
 def test_does_not_invent_a_preference_from_an_unrelated_item():
@@ -77,7 +83,7 @@ def test_does_not_invent_a_preference_from_an_unrelated_item():
             WorkspaceItem(
                 target_field="profile.name",
                 content="小明",
-                evidence_event_ids=(uuid4(),),
+                evidence_refs=(EvidenceRef.for_event_id(uuid4(), "user-1"),),
                 confidence=1.0,
                 selection_reason="test unrelated item",
             ),
@@ -88,4 +94,4 @@ def test_does_not_invent_a_preference_from_an_unrelated_item():
 
     assert response.text == "我还不知道你喜欢什么时候学习。"
     assert "小明" not in response.text
-    assert response.source_event_ids == ()
+    assert response.evidence_refs == ()

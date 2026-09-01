@@ -4,12 +4,14 @@ from self_cognition.cognition.relationship.relationship_extractor import (
 from self_cognition.cognition.semantic.preference_extractor import (
     PreferenceExtractor,
 )
+from self_cognition.core.contributions import CognitionType
 from self_cognition.core.events import Event
 from self_cognition.core.state import SubjectState
 from self_cognition.core.workspace import WorkspaceBuilder
 from self_cognition.executive.dialogue.rule_based import RuleBasedDialogueModel
 from self_cognition.runtime.engine import CognitionEngine
-from self_cognition.runtime.reducer import StateReducer
+from self_cognition.blackboard.reducer import StateReducer
+from self_cognition.blackboard.service import CognitiveSpaceService
 
 
 def test_extracts_relationship_as_an_evidenced_contribution():
@@ -22,18 +24,21 @@ def test_extracts_relationship_as_an_evidenced_contribution():
     assert first == second
     assert len(first) == 1
     contribution = first[0]
-    assert contribution.target_subject_id == "user-1"
+    assert contribution.target == event.subject
     assert contribution.target_field == "relationships.小明.role"
+    assert contribution.cognition_type is CognitionType.FACT
     assert contribution.value == "朋友"
     assert contribution.confidence == 1.0
-    assert contribution.evidence_event_ids == (event.event_id,)
-    assert contribution.source_event_id == event.event_id
+    assert contribution.evidence_refs[0].evidence_id == event.event_id
 
 
 def test_distinguishes_two_relationship_objects_in_state():
     ming_event = Event.user_message("user-1", "小明是我的朋友")
     hong_event = Event.user_message("user-1", "小红是我的同事")
-    engine = CognitionEngine((RelationshipExtractor(),), StateReducer())
+    engine = CognitionEngine(
+        (RelationshipExtractor(),),
+        CognitiveSpaceService(StateReducer()),
+    )
 
     state = engine.process(ming_event, SubjectState.empty("user-1"))
     state = engine.process(hong_event, state)
@@ -46,7 +51,10 @@ def test_distinguishes_two_relationship_objects_in_state():
 def test_relationship_workspace_and_answer_select_only_requested_object():
     ming_event = Event.user_message("user-1", "小明是我的朋友")
     hong_event = Event.user_message("user-1", "小红是我的同事")
-    engine = CognitionEngine((RelationshipExtractor(),), StateReducer())
+    engine = CognitionEngine(
+        (RelationshipExtractor(),),
+        CognitiveSpaceService(StateReducer()),
+    )
     state = engine.process(ming_event, SubjectState.empty("user-1"))
     state = engine.process(hong_event, state)
 
@@ -59,12 +67,19 @@ def test_relationship_workspace_and_answer_select_only_requested_object():
     assert len(workspace.items) == 1
     assert workspace.items[0].target_field == "relationships.小明.role"
     assert response.text == "小明是你的朋友。"
-    assert response.source_event_ids == (ming_event.event_id,)
-    assert hong_event.event_id not in response.source_event_ids
+    assert tuple(ref.evidence_id for ref in response.evidence_refs) == (
+        ming_event.event_id,
+    )
+    assert hong_event.event_id not in {
+        ref.evidence_id for ref in response.evidence_refs
+    }
 
 
 def test_relationship_state_is_isolated_between_owners():
-    engine = CognitionEngine((RelationshipExtractor(),), StateReducer())
+    engine = CognitionEngine(
+        (RelationshipExtractor(),),
+        CognitiveSpaceService(StateReducer()),
+    )
     user_one_event = Event.user_message("user-1", "小明是我的朋友")
     user_two_event = Event.user_message("user-2", "小红是我的同事")
 
@@ -87,7 +102,7 @@ def test_unknown_relationship_is_not_invented():
     event = Event.user_message("user-1", "小红是我的同事")
     state = CognitionEngine(
         (RelationshipExtractor(),),
-        StateReducer(),
+        CognitiveSpaceService(StateReducer()),
     ).process(event, SubjectState.empty("user-1"))
 
     workspace = WorkspaceBuilder().build("我和小明是什么关系？", state)
@@ -98,14 +113,14 @@ def test_unknown_relationship_is_not_invented():
 
     assert workspace.items == ()
     assert response.text == "我还不知道你和小明是什么关系。"
-    assert response.source_event_ids == ()
+    assert response.evidence_refs == ()
 
 
 def test_relationship_module_can_be_disabled():
     event = Event.user_message("user-1", "我喜欢晚上学习")
     state = CognitionEngine(
         (PreferenceExtractor(),),
-        StateReducer(),
+        CognitiveSpaceService(StateReducer()),
     ).process(event, SubjectState.empty("user-1"))
 
     assert state.get("preferences.study_time").value == "晚上"

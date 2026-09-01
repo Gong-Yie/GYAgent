@@ -3,10 +3,12 @@ from self_cognition.cognition.semantic.preference_extractor import (
     PreferenceExtractor,
 )
 from self_cognition.core.events import Event
+from self_cognition.core.evidence import EvidenceRef
 from self_cognition.core.state import SubjectState
 from self_cognition.core.workspace import Workspace, WorkspaceBuilder, WorkspaceItem
 from self_cognition.runtime.engine import CognitionEngine
-from self_cognition.runtime.reducer import StateReducer
+from self_cognition.blackboard.reducer import StateReducer
+from self_cognition.blackboard.service import CognitiveSpaceService
 
 
 def test_selects_only_the_study_time_preference_for_the_question():
@@ -14,7 +16,7 @@ def test_selects_only_the_study_time_preference_for_the_question():
     name_event = Event.user_message("user-1", "我叫小明")
     engine = CognitionEngine(
         modules=(PreferenceExtractor(), NameExtractor()),
-        reducer=StateReducer(),
+        cognitive_space=CognitiveSpaceService(StateReducer()),
     )
     state = engine.process(preference_event, SubjectState.empty("user-1"))
     state = engine.process(name_event, state)
@@ -28,7 +30,7 @@ def test_selects_only_the_study_time_preference_for_the_question():
             WorkspaceItem(
                 target_field="preferences.study_time",
                 content="晚上",
-                evidence_event_ids=(preference_event.event_id,),
+                evidence_refs=(EvidenceRef.for_event(preference_event),),
                 confidence=1.0,
                 selection_reason="question maps to this state field",
             ),
@@ -54,7 +56,7 @@ def test_unmapped_question_does_not_expose_unrelated_state():
     event = Event.user_message("user-1", "我喜欢晚上学习")
     state = CognitionEngine(
         modules=(PreferenceExtractor(),),
-        reducer=StateReducer(),
+        cognitive_space=CognitiveSpaceService(StateReducer()),
     ).process(event, SubjectState.empty("user-1"))
 
     workspace = WorkspaceBuilder().build("我叫什么名字？", state)

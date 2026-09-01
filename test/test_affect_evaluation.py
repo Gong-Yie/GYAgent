@@ -3,6 +3,7 @@ from uuid import UUID
 
 from self_cognition.application.replay import ReplayService
 from self_cognition.cognition.affect.affect_extractor import AffectExtractor
+from self_cognition.core.contributions import CognitionType
 from self_cognition.core.events import Event
 from self_cognition.core.state import SubjectState
 from self_cognition.core.workspace import WorkspaceBuilder
@@ -15,7 +16,8 @@ from self_cognition.infrastructure.persistence.serialization import (
     state_to_json,
 )
 from self_cognition.runtime.engine import CognitionEngine
-from self_cognition.runtime.reducer import StateReducer
+from self_cognition.blackboard.reducer import StateReducer
+from self_cognition.blackboard.service import CognitiveSpaceService
 
 
 EXAM_QUESTION = "我对这次考试感觉怎么样？"
@@ -30,18 +32,29 @@ def make_event(
     actor_id: str = "user-1",
     occurred_at: datetime | None = None,
 ) -> Event:
-    return Event(
+    return Event.user_message(
+        actor_id,
+        content,
         event_id=UUID(int=event_id),
-        event_type="user.message",
-        actor_id=actor_id,
-        content=content,
-        occurred_at=occurred_at
-        or datetime(2026, 8, 13, 12, tzinfo=timezone.utc),
+        clock=FixedClock(
+            occurred_at or datetime(2026, 8, 13, 12, tzinfo=timezone.utc)
+        ),
     )
 
 
+class FixedClock:
+    def __init__(self, value: datetime) -> None:
+        self._value = value
+
+    def now(self) -> datetime:
+        return self._value
+
+
 def make_engine() -> CognitionEngine:
-    return CognitionEngine((AffectExtractor(),), StateReducer())
+    return CognitionEngine(
+        (AffectExtractor(),),
+        CognitiveSpaceService(StateReducer()),
+    )
 
 
 def test_extracts_structured_affect_with_target_scope_and_decay_parameters():
@@ -55,6 +68,7 @@ def test_extracts_structured_affect_with_target_scope_and_decay_parameters():
     assert len(first) == 1
     contribution = first[0]
     assert contribution.target_field == "affect.current.exam"
+    assert contribution.cognition_type is CognitionType.AFFECT
     assert contribution.value == {
         "emotion": "开心",
         "valence": "positive",
@@ -65,8 +79,7 @@ def test_extracts_structured_affect_with_target_scope_and_decay_parameters():
         "half_life_seconds": 3600.0,
     }
     assert contribution.confidence == 1.0
-    assert contribution.evidence_event_ids == (event.event_id,)
-    assert contribution.source_event_id == event.event_id
+    assert contribution.evidence_refs[0].evidence_id == event.event_id
     assert contribution.source_module == "affect.affect_extractor"
 
 
@@ -119,12 +132,12 @@ def test_new_affect_for_the_same_target_replaces_current_view_and_keeps_sources(
 
     assert entry.value["emotion"] == "失望"
     assert entry.value["valence"] == "negative"
-    assert entry.evidence_event_ids == (
+    assert tuple(ref.evidence_id for ref in entry.evidence_refs) == (
         happy_event.event_id,
         disappointed_event.event_id,
     )
     assert response.text == "你对这次考试感到失望，当前强度约为0.80。"
-    assert response.source_event_ids == (
+    assert tuple(ref.evidence_id for ref in response.evidence_refs) == (
         happy_event.event_id,
         disappointed_event.event_id,
     )
@@ -145,7 +158,7 @@ def test_affect_intensity_halves_without_mutating_the_stored_state():
 
     assert workspace.items[0].content["current_intensity"] == 0.4
     assert response.text == "你对这次考试感到开心，当前强度约为0.40。"
-    assert response.source_event_ids == (event.event_id,)
+    assert response.evidence_refs[0].evidence_id == event.event_id
     assert state.get("affect.current.exam").value == original_value
     assert "current_intensity" not in original_value
 
@@ -163,7 +176,7 @@ def test_affect_below_the_active_threshold_is_not_exposed_as_current():
 
     assert workspace.items == ()
     assert response.text == "我没有足够强的当前情感评估。"
-    assert response.source_event_ids == ()
+    assert response.evidence_refs == ()
 
 
 def test_affect_questions_do_not_create_affect_state():
@@ -198,7 +211,10 @@ def test_affect_module_can_be_disabled():
     event = make_event(9, "这次考试通过了，我很开心")
     old_state = SubjectState.empty("user-1")
 
-    state = CognitionEngine((), StateReducer()).process(event, old_state)
+    state = CognitionEngine(
+        (),
+        CognitiveSpaceService(StateReducer()),
+    ).process(event, old_state)
 
     assert state is old_state
     assert not any(field.startswith("affect.") for field in state.entries)
@@ -214,8 +230,8 @@ def test_affect_state_roundtrips_and_replays_deterministically():
         store.append(event)
 
     replay = ReplayService(store, make_engine())
-    first = replay.replay("user-1")
-    second = replay.replay("user-1")
+    first = replay.replay(events[0].subject)
+    second = replay.replay(events[0].subject)
 
     assert second == first
     assert state_from_json(state_to_json(first)) == first

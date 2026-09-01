@@ -1,8 +1,13 @@
 import json
 from typing import Any
 
+from self_cognition.core.contributions import (
+    CognitionType,
+    ContributionOperation,
+)
+from self_cognition.core.evidence import EvidenceRef
 from self_cognition.core.errors import ModelOutputError, ModelTimeoutError
-from self_cognition.core.events import Event
+from self_cognition.core.events import EventEnvelope
 from self_cognition.core.model_outputs import (
     ContributionCandidate,
     ModelExtractionResult,
@@ -22,9 +27,13 @@ OUTPUT_SCHEMA = {
                 "properties": {
                     "target_field": {"type": "string"},
                     "operation": {"type": "string", "enum": ["set"]},
+                    "cognition_type": {
+                        "type": "string",
+                        "enum": [item.value for item in CognitionType],
+                    },
                     "value": {"type": ["string", "number", "boolean", "null"]},
                     "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                    "evidence_event_ids": {
+                    "evidence_ids": {
                         "type": "array",
                         "minItems": 1,
                         "items": {"type": "string"},
@@ -33,9 +42,10 @@ OUTPUT_SCHEMA = {
                 "required": [
                     "target_field",
                     "operation",
+                    "cognition_type",
                     "value",
                     "confidence",
-                    "evidence_event_ids",
+                    "evidence_ids",
                 ],
             },
         }
@@ -84,7 +94,7 @@ class OpenAIResponsesCognitionModel:
 
     def extract(
         self,
-        event: Event,
+        event: EventEnvelope,
         context: RunContext,
     ) -> ModelExtractionResult:
         timeout = min(self._timeout_seconds, self._remaining_seconds(context))
@@ -96,13 +106,15 @@ class OpenAIResponsesCognitionModel:
                 model=self._model,
                 instructions=(
                     "Extract only explicit user cognition facts. Return no candidate "
-                    "when unsupported. Every candidate must cite the supplied event ID."
+                    "when unsupported. Classify every candidate with cognition_type. "
+                    "Every candidate must cite the supplied event ID."
                 ),
                 input=(
                     f"event_id={event.event_id}\n"
-                    f"actor_id={event.actor_id}\n"
+                    "subject_id="
+                    f"{event.subject.subject.subject_id}\n"
                     f"event_type={event.event_type}\n"
-                    f"content={event.content}"
+                    f"content={event.payload.text}"
                 ),
                 text={
                     "format": {
@@ -128,14 +140,33 @@ class OpenAIResponsesCognitionModel:
         if not isinstance(output_text, str) or not output_text.strip():
             raise ModelOutputError("model response is missing structured output")
 
+        response_event = EventEnvelope.model_response(
+            event,
+            model=self._model,
+            response_id=response_id,
+            raw_output=output_text,
+            clock=context.clock,
+            run_id=context.run_id,
+            correlation_id=context.correlation_id,
+        )
+        context.emit_event(response_event)
+
         try:
             payload = json.loads(output_text)
         except json.JSONDecodeError as error:
             raise ModelOutputError("model output is not valid JSON") from error
-        return self._parse_result(response_id, payload)
+        return self._parse_result(
+            response_id,
+            payload,
+            EvidenceRef.for_event(response_event),
+        )
 
     @staticmethod
-    def _parse_result(response_id: str, payload: object) -> ModelExtractionResult:
+    def _parse_result(
+        response_id: str,
+        payload: object,
+        response_evidence: EvidenceRef,
+    ) -> ModelExtractionResult:
         if not isinstance(payload, dict) or set(payload) != {"candidates"}:
             raise ModelOutputError("model output must contain only candidates")
         raw_candidates = payload["candidates"]
@@ -146,45 +177,62 @@ class OpenAIResponsesCognitionModel:
         expected_fields = {
             "target_field",
             "operation",
+            "cognition_type",
             "value",
             "confidence",
-            "evidence_event_ids",
+            "evidence_ids",
         }
         for raw_candidate in raw_candidates:
             if not isinstance(raw_candidate, dict):
                 raise ModelOutputError("model candidate must be an object")
             if set(raw_candidate) != expected_fields:
                 raise ModelOutputError("model candidate fields are invalid")
-            evidence_ids = raw_candidate["evidence_event_ids"]
+            evidence_ids = raw_candidate["evidence_ids"]
             if not isinstance(evidence_ids, list) or not all(
                 isinstance(item, str) for item in evidence_ids
             ):
                 raise ModelOutputError(
-                    "candidate evidence_event_ids must be a string array"
+                    "candidate evidence_ids must be a string array"
                 )
             confidence = raw_candidate["confidence"]
             if not isinstance(confidence, (int, float)) or isinstance(
                 confidence, bool
             ):
                 raise ModelOutputError("candidate confidence must be a number")
+            try:
+                operation = ContributionOperation(
+                    _require_string(
+                        raw_candidate["operation"],
+                        "candidate operation",
+                    )
+                )
+                cognition_type = CognitionType(
+                    _require_string(
+                        raw_candidate["cognition_type"],
+                        "candidate cognition_type",
+                    )
+                )
+            except ValueError as error:
+                raise ModelOutputError(
+                    "candidate operation or cognition_type is invalid"
+                ) from error
             candidates.append(
                 ContributionCandidate(
                     target_field=_require_string(
                         raw_candidate["target_field"],
                         "candidate target_field",
                     ),
-                    operation=_require_string(
-                        raw_candidate["operation"],
-                        "candidate operation",
-                    ),
+                    operation=operation,
+                    cognition_type=cognition_type,
                     value=raw_candidate["value"],
                     confidence=float(confidence),
-                    evidence_event_ids=tuple(evidence_ids),
+                    evidence_ids=tuple(evidence_ids),
                 )
             )
         return ModelExtractionResult(
             response_id=response_id,
             candidates=tuple(candidates),
+            response_evidence=response_evidence,
         )
 
     @staticmethod

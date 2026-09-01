@@ -10,11 +10,15 @@ from self_cognition.core.events import Event
 from self_cognition.infrastructure.persistence.in_memory_event_store import (
     InMemoryEventStore,
 )
+from self_cognition.infrastructure.persistence.in_memory_evidence_repository import (
+    InMemoryEvidenceRepository,
+)
 from self_cognition.infrastructure.persistence.in_memory_state_repository import (
     InMemoryStateRepository,
 )
 from self_cognition.runtime.engine import CognitionEngine
-from self_cognition.runtime.reducer import StateReducer
+from self_cognition.blackboard.reducer import StateReducer
+from self_cognition.blackboard.service import CognitiveSpaceService
 from self_cognition.runtime.run_context import RunContext
 
 
@@ -31,10 +35,11 @@ def test_processes_events_through_the_complete_application_service():
     state_repository = InMemoryStateRepository()
     service = ProcessEventService(
         event_store=event_store,
+        evidence_repository=InMemoryEvidenceRepository(),
         state_repository=state_repository,
         engine=CognitionEngine(
             modules=(PreferenceExtractor(),),
-            reducer=StateReducer(),
+            cognitive_space=CognitiveSpaceService(StateReducer()),
         ),
     )
     evening_event = Event.user_message("user-1", "我喜欢晚上学习")
@@ -67,12 +72,19 @@ def test_processes_events_through_the_complete_application_service():
     assert first_state.version == 1
     assert duplicate_state.version == 1
     assert final_state.version == 2
-    assert event_store.read_all() == (evening_event, morning_event)
+    user_events = tuple(
+        event for event in event_store.read_by_subject(evening_event.subject)
+        if event.event_type == "user.message"
+    )
+    assert tuple(event.event_id for event in user_events) == (
+        evening_event.event_id,
+        morning_event.event_id,
+    )
     assert state_repository.load("user-1") == final_state
 
     preference = final_state.get("preferences.study_time")
     assert preference.value == "早上"
-    assert preference.evidence_event_ids == (
+    assert tuple(ref.evidence_id for ref in preference.evidence_refs) == (
         evening_event.event_id,
         morning_event.event_id,
     )

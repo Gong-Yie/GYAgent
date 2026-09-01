@@ -1,11 +1,13 @@
 from datetime import timezone
 
-from self_cognition.core.contributions import Contribution
-from self_cognition.core.events import Event
+from self_cognition.core.contributions import CognitiveContribution, CognitionType
+from self_cognition.core.evidence import EvidenceRef
+from self_cognition.core.events import EventEnvelope
 from self_cognition.core.ids import contribution_id
 
 
 SOURCE_MODULE = "episodic.memory_extractor"
+MODULE_VERSION = "1"
 TIME_CUES = ("今天", "昨天", "刚刚", "前天", "上周")
 
 
@@ -14,8 +16,8 @@ class EpisodicMemoryExtractor:
 
     subscriptions = frozenset({"user.message"})
 
-    def process(self, event: Event) -> tuple[Contribution, ...]:
-        if not event.content.startswith(TIME_CUES):
+    def process(self, event: EventEnvelope) -> tuple[CognitiveContribution, ...]:
+        if not event.payload.text.startswith(TIME_CUES):
             return ()
 
         occurred_at = event.occurred_at.astimezone(timezone.utc).isoformat()
@@ -23,18 +25,19 @@ class EpisodicMemoryExtractor:
             f"episodic.experience.{occurred_at}.{event.event_id}"
         )
         return (
-            Contribution(
+            CognitiveContribution.set_from_event(
+                event,
                 contribution_id=contribution_id(
                     event.event_id,
                     SOURCE_MODULE,
                     target_field,
                 ),
-                target_subject_id=event.actor_id,
                 target_field=target_field,
-                value=event.content,
+                cognition_type=CognitionType.FACT,
+                value=event.payload.text,
                 confidence=1.0,
-                evidence_event_ids=(event.event_id,),
-                source_event_id=event.event_id,
+                evidence_refs=(EvidenceRef.for_event(event),),
                 source_module=SOURCE_MODULE,
+                module_version=MODULE_VERSION,
             ),
         )

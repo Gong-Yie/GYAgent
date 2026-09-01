@@ -17,7 +17,8 @@ from self_cognition.core.state import SubjectState
 from self_cognition.core.time import SYSTEM_CLOCK
 from self_cognition.core.workspace import WorkspaceBuilder
 from self_cognition.runtime.engine import CognitionEngine
-from self_cognition.runtime.reducer import StateReducer
+from self_cognition.blackboard.reducer import StateReducer
+from self_cognition.blackboard.service import CognitiveSpaceService
 from self_cognition.runtime.run_context import RunContext
 
 
@@ -95,7 +96,7 @@ def test_workspace_uses_its_clock_for_affect_decay() -> None:
     )
     state = CognitionEngine(
         modules=(AffectExtractor(),),
-        reducer=StateReducer(),
+        cognitive_space=CognitiveSpaceService(StateReducer()),
     ).process(event, SubjectState.empty("user-1"))
     builder = WorkspaceBuilder(
         clock=FixedClock(assessed_at + timedelta(hours=1))

@@ -8,6 +8,7 @@ from self_cognition.cognition.metacognition.conflict_extractor import (
 from self_cognition.cognition.semantic.preference_extractor import (
     PreferenceExtractor,
 )
+from self_cognition.core.contributions import CognitionType
 from self_cognition.core.events import Event
 from self_cognition.core.state import SubjectState
 from self_cognition.core.workspace import WorkspaceBuilder
@@ -16,26 +17,34 @@ from self_cognition.infrastructure.persistence.in_memory_event_store import (
     InMemoryEventStore,
 )
 from self_cognition.runtime.engine import CognitionEngine
-from self_cognition.runtime.reducer import StateReducer
+from self_cognition.blackboard.reducer import StateReducer
+from self_cognition.blackboard.service import CognitiveSpaceService
 
 
 QUESTION = "我喜欢什么时候学习？"
 
 
 def make_event(event_id: int, content: str) -> Event:
-    return Event(
+    return Event.user_message(
+        "user-1",
+        content,
         event_id=UUID(int=event_id),
-        event_type="user.message",
-        actor_id="user-1",
-        content=content,
-        occurred_at=datetime(2026, 8, 13, 12, tzinfo=timezone.utc),
+        clock=FixedClock(datetime(2026, 8, 13, 12, tzinfo=timezone.utc)),
     )
+
+
+class FixedClock:
+    def __init__(self, value: datetime) -> None:
+        self._value = value
+
+    def now(self) -> datetime:
+        return self._value
 
 
 def make_engine() -> CognitionEngine:
     return CognitionEngine(
         modules=(PreferenceExtractor(), ConflictMetacognitionExtractor()),
-        reducer=StateReducer(),
+        cognitive_space=CognitiveSpaceService(StateReducer()),
     )
 
 
@@ -53,9 +62,9 @@ def test_explicit_uncertainty_becomes_an_evidenced_contribution():
         "metacognition.uncertainties.preferences.study_time"
     )
     assert contribution.value == "早上或晚上"
+    assert contribution.cognition_type is CognitionType.INFERENCE
     assert contribution.confidence == 1.0
-    assert contribution.evidence_event_ids == (event.event_id,)
-    assert contribution.source_event_id == event.event_id
+    assert contribution.evidence_refs[0].evidence_id == event.event_id
     assert contribution.source_module == "metacognition.conflict_extractor"
 
 
@@ -71,8 +80,9 @@ def test_mutually_exclusive_values_create_conflict_and_metacognition():
     assert conflict.target_field == "preferences.study_time"
     assert len(conflict.candidate_contribution_ids) == 2
     meta_entry = state.get("metacognition.conflicts.preferences.study_time")
+    assert meta_entry.cognition_type is CognitionType.INFERENCE
     assert meta_entry.value == "早上和晚上"
-    assert meta_entry.evidence_event_ids == (event.event_id,)
+    assert meta_entry.evidence_refs[0].evidence_id == event.event_id
 
 
 def test_uncertainty_reaches_workspace_and_observable_answer():
@@ -86,7 +96,7 @@ def test_uncertainty_reaches_workspace_and_observable_answer():
         "metacognition.uncertainties.preferences.study_time"
     ]
     assert response.text == "你还不确定更喜欢早上还是晚上学习。"
-    assert response.source_event_ids == (event.event_id,)
+    assert response.evidence_refs[0].evidence_id == event.event_id
 
 
 def test_conflict_takes_priority_over_an_older_certain_preference():
@@ -101,8 +111,10 @@ def test_conflict_takes_priority_over_an_older_certain_preference():
 
     assert state.get("preferences.study_time").value == "晚上"
     assert response.text == "你的学习时间偏好存在冲突：同时提到了早上和晚上。"
-    assert response.source_event_ids == (conflict_event.event_id,)
-    assert certain_event.event_id not in response.source_event_ids
+    assert response.evidence_refs[0].evidence_id == conflict_event.event_id
+    assert certain_event.event_id not in {
+        ref.evidence_id for ref in response.evidence_refs
+    }
 
 
 def test_metacognition_module_can_be_disabled():
@@ -111,7 +123,7 @@ def test_metacognition_module_can_be_disabled():
 
     state = CognitionEngine(
         modules=(PreferenceExtractor(),),
-        reducer=StateReducer(),
+        cognitive_space=CognitiveSpaceService(StateReducer()),
     ).process(event, old_state)
 
     assert state is old_state
@@ -124,11 +136,11 @@ def test_conflict_and_metacognition_replay_is_deterministic():
     store.append(event)
 
     replay = ReplayService(store, make_engine())
-    first = replay.replay("user-1")
-    second = replay.replay("user-1")
+    first = replay.replay(event.subject)
+    second = replay.replay(event.subject)
 
     assert second == first
     assert len(first.conflicts) == 1
     assert first.get(
         "metacognition.conflicts.preferences.study_time"
-    ).evidence_event_ids == (event.event_id,)
+    ).evidence_refs[0].evidence_id == event.event_id

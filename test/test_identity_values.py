@@ -6,6 +6,7 @@ from self_cognition.cognition.identity.identity_value_extractor import (
     IdentityValueExtractor,
 )
 from self_cognition.core.contributions import Contribution
+from self_cognition.core.evidence import EvidenceRef
 from self_cognition.core.events import Event
 from self_cognition.core.state import SubjectState
 from self_cognition.core.workspace import WorkspaceBuilder
@@ -14,7 +15,8 @@ from self_cognition.infrastructure.persistence.in_memory_event_store import (
     InMemoryEventStore,
 )
 from self_cognition.runtime.engine import CognitionEngine
-from self_cognition.runtime.reducer import StateReducer
+from self_cognition.blackboard.reducer import StateReducer
+from self_cognition.blackboard.service import CognitiveSpaceService
 
 
 ROLE_QUESTION = "我的角色是什么？"
@@ -22,13 +24,20 @@ VALUE_QUESTION = "我最重视什么？"
 
 
 def make_event(event_id: int, content: str, actor_id: str = "user-1") -> Event:
-    return Event(
+    return Event.user_message(
+        actor_id,
+        content,
         event_id=UUID(int=event_id),
-        event_type="user.message",
-        actor_id=actor_id,
-        content=content,
-        occurred_at=datetime(2026, 8, 13, 12, tzinfo=timezone.utc),
+        clock=FixedClock(datetime(2026, 8, 13, 12, tzinfo=timezone.utc)),
     )
+
+
+class FixedClock:
+    def __init__(self, value: datetime) -> None:
+        self._value = value
+
+    def now(self) -> datetime:
+        return self._value
 
 
 def make_contribution(
@@ -46,15 +55,17 @@ def make_contribution(
         target_field=target_field,
         value=value,
         confidence=confidence,
-        evidence_event_ids=(source_event_id,),
-        source_event_id=source_event_id,
+        evidence_refs=(EvidenceRef.for_event_id(source_event_id, "user-1"),),
         source_module="test.identity_values",
         explicitly_confirmed=confirmed,
     )
 
 
 def make_engine() -> CognitionEngine:
-    return CognitionEngine((IdentityValueExtractor(),), StateReducer())
+    return CognitionEngine(
+        (IdentityValueExtractor(),),
+        CognitiveSpaceService(StateReducer()),
+    )
 
 
 def test_identity_and_value_statements_become_evidenced_contributions():
@@ -70,11 +81,11 @@ def test_identity_and_value_statements_become_evidenced_contributions():
     assert role[0].value == "研究助手"
     assert role[0].confidence == 1.0
     assert role[0].explicitly_confirmed is False
-    assert role[0].evidence_event_ids == (role_event.event_id,)
+    assert role[0].evidence_refs[0].evidence_id == role_event.event_id
     assert value[0].target_field == "values.principle"
     assert value[0].value == "诚实"
     assert value[0].confidence == 1.0
-    assert value[0].evidence_event_ids == (value_event.event_id,)
+    assert value[0].evidence_refs[0].evidence_id == value_event.event_id
 
 
 def test_identity_and_value_questions_are_not_recorded_as_answers():
@@ -93,7 +104,7 @@ def test_identity_and_value_questions_are_not_recorded_as_answers():
     )
 
     assert role_response.text == "我还不知道你的角色。"
-    assert role_response.source_event_ids == ()
+    assert role_response.evidence_refs == ()
 
 
 def test_protected_fields_require_high_confidence_for_first_write():
@@ -178,9 +189,9 @@ def test_unconfirmed_identity_change_is_rejected_but_confirmation_is_accepted():
     assert unconfirmed.contribution_id not in rejected_state.applied_contribution_ids
     entry = final_state.get("identity.role")
     assert entry.value == "学习助手"
-    assert entry.evidence_event_ids == (
-        initial.source_event_id,
-        confirmed.source_event_id,
+    assert tuple(ref.evidence_id for ref in entry.evidence_refs) == (
+        initial.evidence_refs[0].evidence_id,
+        confirmed.evidence_refs[0].evidence_id,
     )
     assert entry.contribution_ids == (
         initial.contribution_id,
@@ -227,12 +238,12 @@ def test_identity_and_values_reach_workspace_and_answers_with_sources():
         "identity.role"
     ]
     assert role_response.text == "你的角色是研究助手。"
-    assert role_response.source_event_ids == (role_event.event_id,)
+    assert role_response.evidence_refs[0].evidence_id == role_event.event_id
     assert [item.target_field for item in value_workspace.items] == [
         "values.principle"
     ]
     assert value_response.text == "你最重视诚实。"
-    assert value_response.source_event_ids == (value_event.event_id,)
+    assert value_response.evidence_refs[0].evidence_id == value_event.event_id
 
 
 def test_identity_state_is_isolated_between_subjects():
@@ -251,7 +262,10 @@ def test_identity_value_module_can_be_disabled():
     event = make_event(14, "我的角色是研究助手")
     old_state = SubjectState.empty("user-1")
 
-    state = CognitionEngine((), StateReducer()).process(event, old_state)
+    state = CognitionEngine(
+        (),
+        CognitiveSpaceService(StateReducer()),
+    ).process(event, old_state)
 
     assert state is old_state
     assert "identity.role" not in state.entries
@@ -269,8 +283,8 @@ def test_identity_and_value_replay_is_deterministic():
         store.append(event)
 
     replay = ReplayService(store, make_engine())
-    first = replay.replay("user-1")
-    second = replay.replay("user-1")
+    first = replay.replay(events[0].subject)
+    second = replay.replay(events[0].subject)
 
     assert second == first
     assert first.get("identity.role").value == "学习助手"

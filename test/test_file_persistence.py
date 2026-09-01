@@ -22,8 +22,12 @@ from self_cognition.infrastructure.persistence.file_state_repository import (
 from self_cognition.infrastructure.persistence.in_memory_event_store import (
     InMemoryEventStore,
 )
+from self_cognition.infrastructure.persistence.in_memory_evidence_repository import (
+    InMemoryEvidenceRepository,
+)
 from self_cognition.runtime.engine import CognitionEngine
-from self_cognition.runtime.reducer import StateReducer
+from self_cognition.blackboard.reducer import StateReducer
+from self_cognition.blackboard.service import CognitiveSpaceService
 from self_cognition.runtime.run_context import RunContext
 
 
@@ -37,17 +41,14 @@ def make_context(run_id: int) -> RunContext:
 
 def make_states() -> tuple[SubjectState, SubjectState]:
     extractor = PreferenceExtractor()
-    reducer = StateReducer()
+    engine = CognitionEngine(
+        (extractor,),
+        CognitiveSpaceService(StateReducer()),
+    )
     evening_event = Event.user_message("user-1", "我喜欢晚上学习")
     morning_event = Event.user_message("user-1", "我喜欢早上学习")
-    version_one = reducer.apply(
-        SubjectState.empty("user-1"),
-        extractor.process(evening_event)[0],
-    )
-    version_two = reducer.apply(
-        version_one,
-        extractor.process(morning_event)[0],
-    )
+    version_one = engine.process(evening_event, SubjectState.empty("user-1"))
+    version_two = engine.process(morning_event, version_one)
     return version_one, version_two
 
 
@@ -62,9 +63,10 @@ def test_file_event_store_appends_deduplicates_and_reloads(tmp_path):
     store.append(second)
 
     reloaded = FileEventStore(path)
-    assert store.read_all() == (first, second)
-    assert reloaded.read_all() == (first, second)
-    assert reloaded.read_by_subject("user-1") == (first,)
+    assert store.read_by_subject(first.subject) == (first,)
+    assert store.read_by_subject(second.subject) == (second,)
+    assert reloaded.read_by_subject(first.subject) == (first,)
+    assert reloaded.read_by_subject(second.subject) == (second,)
     assert path.read_text(encoding="utf-8").count("\n") == 2
     assert len(
         [line for line in path.read_text(encoding="utf-8").splitlines() if line]
@@ -94,8 +96,7 @@ def test_event_write_failure_does_not_mark_event_as_appended(tmp_path, monkeypat
     with pytest.raises(OSError, match="write failure"):
         store.append(event)
 
-    assert store.contains(event.event_id) is False
-    assert store.read_all() == ()
+    assert store.read_by_subject(event.subject) == ()
 
 
 class _FailingHandle:
@@ -131,8 +132,12 @@ def test_application_service_works_with_file_adapters(tmp_path):
     state_repository = FileStateRepository(tmp_path / "states")
     service = ProcessEventService(
         event_store=event_store,
+        evidence_repository=InMemoryEvidenceRepository(),
         state_repository=state_repository,
-        engine=CognitionEngine((PreferenceExtractor(),), StateReducer()),
+        engine=CognitionEngine(
+            (PreferenceExtractor(),),
+            CognitiveSpaceService(StateReducer()),
+        ),
     )
     event = Event.user_message("user-1", "我喜欢晚上学习")
 
@@ -141,7 +146,11 @@ def test_application_service_works_with_file_adapters(tmp_path):
     assert result.status is ProcessEventStatus.SUCCEEDED
     assert result.state is not None
     assert result.state.get("preferences.study_time").value == "晚上"
-    assert FileEventStore(tmp_path / "events.jsonl").read_all() == (event,)
+    stored_event = FileEventStore(tmp_path / "events.jsonl").read_by_subject(
+        event.subject
+    )[0]
+    assert stored_event.event_id == event.event_id
+    assert stored_event.run_id == UUID(int=1)
     assert (
         FileStateRepository(tmp_path / "states").load("user-1")
         == result.state
@@ -152,8 +161,16 @@ def test_corrupt_snapshot_can_be_recovered_by_replaying_the_event_log(tmp_path):
     event_store = FileEventStore(tmp_path / "events.jsonl")
     state_directory = tmp_path / "states"
     state_repository = FileStateRepository(state_directory)
-    engine = CognitionEngine((PreferenceExtractor(),), StateReducer())
-    service = ProcessEventService(event_store, state_repository, engine)
+    engine = CognitionEngine(
+        (PreferenceExtractor(),),
+        CognitiveSpaceService(StateReducer()),
+    )
+    service = ProcessEventService(
+        event_store,
+        InMemoryEvidenceRepository(),
+        state_repository,
+        engine,
+    )
     events = (
         Event.user_message("user-1", "我喜欢晚上学习"),
         Event.user_message("user-1", "我喜欢早上学习"),
@@ -172,7 +189,7 @@ def test_corrupt_snapshot_can_be_recovered_by_replaying_the_event_log(tmp_path):
     recovered_state = ReplayService(
         FileEventStore(tmp_path / "events.jsonl"),
         engine,
-    ).replay("user-1")
+    ).replay(events[0].subject)
     assert recovered_state == expected_state
 
 

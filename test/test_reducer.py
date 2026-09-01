@@ -1,262 +1,284 @@
-from uuid import UUID, uuid4
+from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
 import pytest
 
-from self_cognition.core.contributions import Contribution
-from self_cognition.core.errors import SubjectMismatchError
-from self_cognition.core.state import ConflictRecord, StateEntry, SubjectState
-from self_cognition.runtime.reducer import StateReducer
+from self_cognition.blackboard.reducer import (
+    CONFIRMATION_REQUIRED_REASON,
+    CONFLICT_REASON,
+    EXPIRED_REASON,
+    LOW_CONFIDENCE_REASON,
+    NOT_YET_VALID_REASON,
+    STALE_VERSION_REASON,
+    StateReducer,
+)
+from self_cognition.core.contributions import (
+    CognitiveContribution,
+    CognitionType,
+    ContributionOperation,
+)
+from self_cognition.core.evidence import EvidenceRef
+from self_cognition.core.errors import ScopeMismatchError, SubjectMismatchError
+from self_cognition.core.scopes import (
+    DataScope,
+    DisclosureScope,
+    MindScope,
+    SubjectKind,
+    SubjectRef,
+    SubjectScope,
+)
+from self_cognition.core.state import (
+    ConflictRecord,
+    StateDecisionStatus,
+    SubjectState,
+)
 
 
-def test_rejects_contribution_for_another_subject_without_changing_state():
-    source_event_id = uuid4()
-    existing_contribution_id = uuid4()
-    existing_entry = StateEntry(
-        value="晚上",
-        confidence=1.0,
-        evidence_event_ids=(uuid4(),),
-        contribution_ids=(existing_contribution_id,),
+NOW = datetime(2026, 9, 1, 12, tzinfo=timezone.utc)
+SUBJECT = SubjectScope.legacy_user("user-1")
+
+
+def make_contribution(
+    contribution_id: int,
+    *,
+    target: SubjectScope = SUBJECT,
+    target_field: str = "preferences.study_time",
+    value: object = "晚上",
+    confidence: float = 1.0,
+    target_version: int = 0,
+    valid_from: datetime = NOW,
+    expires_at: datetime | None = None,
+    explicitly_confirmed: bool = False,
+) -> CognitiveContribution:
+    scope = DataScope(target, DisclosureScope.PRIVATE)
+    return CognitiveContribution(
+        contribution_id=UUID(int=contribution_id),
+        target=target,
+        target_field=target_field,
+        operation=ContributionOperation.SET,
+        cognition_type=CognitionType.PREFERENCE,
+        value=value,
+        confidence=confidence,
+        evidence_refs=(EvidenceRef.for_event_id(UUID(int=100 + contribution_id), target),),
+        source_module="test.reducer",
+        module_version="1",
+        scope=scope,
+        created_at=NOW,
+        valid_from=valid_from,
+        expires_at=expires_at,
+        target_version=target_version,
+        explicitly_confirmed=explicitly_confirmed,
     )
-    old_state = SubjectState(
-        subject_id="user-1",
-        version=1,
-        entries={"preferences.study_time": existing_entry},
-        applied_contribution_ids=frozenset(),
-        conflicts=frozenset(),
-    )
-    contribution = Contribution(
-        contribution_id=uuid4(),
-        target_subject_id="user-2",
-        target_field="preferences.study_time",
-        value="早上",
-        confidence=1.0,
-        evidence_event_ids=(source_event_id,),
-        source_event_id=source_event_id,
-        source_module="semantic.preference_extractor",
-    )
-    original_version = old_state.version
-    original_entries = dict(old_state.entries)
-
-    with pytest.raises(SubjectMismatchError):
-        StateReducer().apply(old_state, contribution)
-
-    assert old_state.version == original_version
-    assert old_state.entries == original_entries
 
 
-def test_empty_state_has_no_applied_contributions():
-    state = SubjectState.empty(subject_id="user-1")
-
-    assert state.applied_contribution_ids == frozenset()
-    assert state.conflicts == frozenset()
-
-
-def test_applying_same_contribution_twice_changes_state_only_once():
-    source_event_id = uuid4()
-    contribution = Contribution(
-        contribution_id=uuid4(),
-        target_subject_id="user-1",
-        target_field="preferences.study_time",
-        value="晚上",
-        confidence=1.0,
-        evidence_event_ids=(source_event_id,),
-        source_event_id=source_event_id,
-        source_module="semantic.preference_extractor",
-    )
+def test_accepts_once_and_builds_typed_atom_with_audit_record() -> None:
+    contribution = make_contribution(1)
     reducer = StateReducer()
 
-    first_state = reducer.apply(SubjectState.empty("user-1"), contribution)
-    second_state = reducer.apply(first_state, contribution)
-
-    assert first_state.version == 1
-    assert second_state is first_state
-    assert second_state.version == 1
-    assert len(second_state.entries) == 1
-    assert second_state.get("preferences.study_time").evidence_event_ids == (
-        source_event_id,
-    )
-    assert second_state.applied_contribution_ids == frozenset(
-        {contribution.contribution_id}
-    )
-
-
-def test_merges_sources_once_in_first_seen_order():
-    first_event_id = uuid4()
-    second_event_id = uuid4()
-    first_contribution = Contribution(
-        contribution_id=uuid4(),
-        target_subject_id="user-1",
-        target_field="preferences.study_time",
-        value="晚上",
-        confidence=1.0,
-        evidence_event_ids=(first_event_id,),
-        source_event_id=first_event_id,
-        source_module="semantic.preference_extractor",
-    )
-    second_contribution = Contribution(
-        contribution_id=uuid4(),
-        target_subject_id="user-1",
-        target_field="preferences.study_time",
-        value="早上",
-        confidence=0.9,
-        evidence_event_ids=(first_event_id, second_event_id),
-        source_event_id=second_event_id,
-        source_module="semantic.preference_extractor",
-    )
-    reducer = StateReducer()
-
-    first_state = reducer.apply(SubjectState.empty("user-1"), first_contribution)
-    second_state = reducer.apply(first_state, second_contribution)
-    entry = second_state.get("preferences.study_time")
-
-    assert entry.value == "早上"
-    assert entry.confidence == 0.9
-    assert entry.evidence_event_ids == (first_event_id, second_event_id)
-    assert entry.contribution_ids == (
-        first_contribution.contribution_id,
-        second_contribution.contribution_id,
-    )
-
-
-def test_apply_many_processes_duplicate_contribution_once():
-    event_id = uuid4()
-    contribution = Contribution(
-        contribution_id=uuid4(),
-        target_subject_id="user-1",
-        target_field="preferences.study_time",
-        value="晚上",
-        confidence=1.0,
-        evidence_event_ids=(event_id,),
-        source_event_id=event_id,
-        source_module="semantic.preference_extractor",
-    )
-
-    state = StateReducer().apply_many(
+    first = reducer.apply(
         SubjectState.empty("user-1"),
-        (contribution, contribution),
+        contribution,
+        decided_at=NOW,
     )
+    replayed = reducer.apply(first, contribution, decided_at=NOW)
 
-    assert state.version == 1
-    assert state.get("preferences.study_time").contribution_ids == (
-        contribution.contribution_id,
-    )
-    assert state.applied_contribution_ids == frozenset(
-        {contribution.contribution_id}
-    )
-    assert state.conflicts == frozenset()
+    assert replayed is first
+    assert first.version == 1
+    assert first.applied_contribution_ids == frozenset({UUID(int=1)})
+    assert first.get("preferences.study_time").cognition_type is CognitionType.PREFERENCE
+    assert first.changes[0].status is StateDecisionStatus.ACCEPTED
+    assert first.changes[0].contribution == contribution
 
 
-def test_apply_many_records_conflict_without_choosing_a_value():
-    evening_event_id = UUID(int=101)
-    morning_event_id = UUID(int=102)
-    evening = Contribution(
-        contribution_id=UUID(int=1),
-        target_subject_id="user-1",
-        target_field="preferences.study_time",
-        value="晚上",
-        confidence=1.0,
-        evidence_event_ids=(evening_event_id,),
-        source_event_id=evening_event_id,
-        source_module="semantic.preference_extractor",
-    )
-    morning = Contribution(
-        contribution_id=UUID(int=2),
-        target_subject_id="user-1",
-        target_field="preferences.study_time",
-        value="早上",
-        confidence=1.0,
-        evidence_event_ids=(morning_event_id,),
-        source_event_id=morning_event_id,
-        source_module="semantic.preference_extractor",
-    )
+def test_sequential_updates_merge_evidence_and_contribution_ids() -> None:
+    reducer = StateReducer()
+    first = make_contribution(1)
+    second = make_contribution(2, value="早上", target_version=1)
 
-    state = StateReducer().apply_many(
+    state = reducer.apply(
+        SubjectState.empty("user-1"),
+        first,
+        decided_at=NOW,
+    )
+    state = reducer.apply(state, second, decided_at=NOW)
+
+    atom = state.get("preferences.study_time")
+    assert atom.value == "早上"
+    assert tuple(ref.evidence_id for ref in atom.evidence_refs) == (
+        UUID(int=101),
+        UUID(int=102),
+    )
+    assert atom.contribution_ids == (UUID(int=1), UUID(int=2))
+
+
+def test_batch_conflict_is_pending_and_safe_to_replay() -> None:
+    evening = make_contribution(1)
+    morning = make_contribution(2, value="早上")
+    reducer = StateReducer()
+
+    state = reducer.apply_many(
         SubjectState.empty("user-1"),
         (morning, evening),
+        decided_at=NOW,
+    )
+    replayed = reducer.apply_many(
+        state,
+        (evening, morning),
+        decided_at=NOW,
     )
 
+    assert replayed is state
+    assert state.version == 2
     assert "preferences.study_time" not in state.entries
-    assert state.version == 1
-    assert state.applied_contribution_ids == frozenset()
+    assert tuple(change.status for change in state.changes) == (
+        StateDecisionStatus.PENDING,
+        StateDecisionStatus.PENDING,
+    )
     assert state.conflicts == frozenset(
         {
             ConflictRecord(
                 target_field="preferences.study_time",
                 candidate_contribution_ids=(UUID(int=1), UUID(int=2)),
-                reason="different values for the same field in one batch",
+                reason=CONFLICT_REASON,
             )
         }
     )
 
 
-def test_apply_many_is_independent_of_input_order_and_safe_to_replay():
-    evening_event_id = UUID(int=201)
-    morning_event_id = UUID(int=202)
-    name_event_id = UUID(int=203)
-    evening = Contribution(
-        contribution_id=UUID(int=11),
-        target_subject_id="user-1",
-        target_field="preferences.study_time",
-        value="晚上",
-        confidence=1.0,
-        evidence_event_ids=(evening_event_id,),
-        source_event_id=evening_event_id,
-        source_module="semantic.preference_extractor",
+@pytest.mark.parametrize(
+    ("contribution", "status", "reason"),
+    [
+        (
+            make_contribution(
+                1,
+                target_field="identity.role",
+                confidence=0.5,
+            ),
+            StateDecisionStatus.REJECTED,
+            LOW_CONFIDENCE_REASON,
+        ),
+        (
+            make_contribution(2, target_version=9),
+            StateDecisionStatus.REJECTED,
+            STALE_VERSION_REASON,
+        ),
+        (
+            make_contribution(3, valid_from=NOW + timedelta(seconds=1)),
+            StateDecisionStatus.PENDING,
+            NOT_YET_VALID_REASON,
+        ),
+        (
+            make_contribution(
+                4,
+                valid_from=NOW - timedelta(seconds=2),
+                expires_at=NOW - timedelta(seconds=1),
+            ),
+            StateDecisionStatus.REJECTED,
+            EXPIRED_REASON,
+        ),
+    ],
+)
+def test_non_applied_decisions_increment_version_and_are_audited(
+    contribution: CognitiveContribution,
+    status: StateDecisionStatus,
+    reason: str,
+) -> None:
+    state = StateReducer().apply(
+        SubjectState.empty("user-1"),
+        contribution,
+        decided_at=NOW,
     )
-    morning = Contribution(
-        contribution_id=UUID(int=12),
-        target_subject_id="user-1",
-        target_field="preferences.study_time",
-        value="早上",
-        confidence=1.0,
-        evidence_event_ids=(morning_event_id,),
-        source_event_id=morning_event_id,
-        source_module="semantic.preference_extractor",
+
+    assert state.version == 1
+    assert state.entries == {}
+    assert state.changes[0].status is status
+    assert state.changes[0].reason == reason
+
+
+def test_protected_update_waits_for_confirmation_then_applies() -> None:
+    reducer = StateReducer()
+    initial = make_contribution(1, target_field="identity.role", value="助手")
+    unconfirmed = make_contribution(
+        2,
+        target_field="identity.role",
+        value="研究助手",
+        target_version=1,
     )
-    name = Contribution(
-        contribution_id=UUID(int=13),
-        target_subject_id="user-1",
-        target_field="profile.name",
-        value="小明",
-        confidence=1.0,
-        evidence_event_ids=(name_event_id,),
-        source_event_id=name_event_id,
-        source_module="semantic.name_extractor",
+    confirmed = make_contribution(
+        3,
+        target_field="identity.role",
+        value="研究助手",
+        target_version=2,
+        explicitly_confirmed=True,
+    )
+
+    state = reducer.apply(
+        SubjectState.empty("user-1"),
+        initial,
+        decided_at=NOW,
+    )
+    state = reducer.apply(state, unconfirmed, decided_at=NOW)
+    assert state.version == 2
+    assert state.get("identity.role").value == "助手"
+    assert state.changes[-1].status is StateDecisionStatus.PENDING
+    assert state.changes[-1].reason == CONFIRMATION_REQUIRED_REASON
+
+    state = reducer.apply(state, confirmed, decided_at=NOW)
+    assert state.version == 3
+    assert state.get("identity.role").value == "研究助手"
+
+
+def test_batch_order_does_not_change_result() -> None:
+    contributions = (
+        make_contribution(11),
+        make_contribution(12, value="早上"),
+        make_contribution(13, target_field="profile.name", value="小明"),
     )
     reducer = StateReducer()
 
     forward = reducer.apply_many(
         SubjectState.empty("user-1"),
-        (evening, morning, name),
+        contributions,
+        decided_at=NOW,
     )
     reverse = reducer.apply_many(
         SubjectState.empty("user-1"),
-        (name, morning, evening),
+        tuple(reversed(contributions)),
+        decided_at=NOW,
     )
-    replayed = reducer.apply_many(forward, (name, morning, evening))
 
     assert forward == reverse
-    assert forward.version == 2
+    assert forward.version == 3
     assert forward.get("profile.name").value == "小明"
-    assert "preferences.study_time" not in forward.entries
-    assert replayed is forward
 
 
-def test_apply_many_rejects_mixed_subjects_without_changing_state():
-    event_id = uuid4()
-    contribution = Contribution(
-        contribution_id=uuid4(),
-        target_subject_id="user-2",
-        target_field="preferences.study_time",
-        value="晚上",
-        confidence=1.0,
-        evidence_event_ids=(event_id,),
-        source_event_id=event_id,
-        source_module="semantic.preference_extractor",
-    )
+@pytest.mark.parametrize(
+    ("target", "error_type"),
+    [
+        (
+            SubjectScope.legacy_user("user-2"),
+            SubjectMismatchError,
+        ),
+        (
+            SubjectScope(
+                MindScope("mind-2"),
+                SubjectRef(SubjectKind.USER, "user-1"),
+            ),
+            ScopeMismatchError,
+        ),
+    ],
+)
+def test_rejects_foreign_scope_without_changing_state(
+    target: SubjectScope,
+    error_type: type[Exception],
+) -> None:
     old_state = SubjectState.empty("user-1")
 
-    with pytest.raises(SubjectMismatchError):
-        StateReducer().apply_many(old_state, (contribution,))
+    with pytest.raises(error_type):
+        StateReducer().apply(
+            old_state,
+            make_contribution(1, target=target),
+            decided_at=NOW,
+        )
 
     assert old_state == SubjectState.empty("user-1")

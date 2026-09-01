@@ -1,14 +1,14 @@
-from uuid import UUID
-
-from self_cognition.core.contributions import Contribution
+from self_cognition.core.contributions import CognitiveContribution
+from self_cognition.core.evidence import EvidenceRef
 from self_cognition.core.errors import ModelOutputError, RunCancelledError
-from self_cognition.core.events import Event
+from self_cognition.core.events import EventEnvelope
 from self_cognition.core.ids import contribution_id
 from self_cognition.core.protocols import CognitionModel
 from self_cognition.runtime.run_context import RunContext
 
 
 SOURCE_MODULE = "semantic.llm_extractor"
+MODULE_VERSION = "1"
 
 
 class LLMSemanticExtractor:
@@ -19,9 +19,9 @@ class LLMSemanticExtractor:
 
     def process(
         self,
-        event: Event,
+        event: EventEnvelope,
         context: RunContext,
-    ) -> tuple[Contribution, ...]:
+    ) -> tuple[CognitiveContribution, ...]:
         if context.is_cancelled:
             raise RunCancelledError("run cancelled before cognition model")
 
@@ -30,35 +30,28 @@ class LLMSemanticExtractor:
         if context.is_cancelled:
             raise RunCancelledError("run cancelled after cognition model")
 
-        contributions: list[Contribution] = []
+        contributions: list[CognitiveContribution] = []
+        event_evidence = EvidenceRef.for_event(event)
         for candidate in result.candidates:
-            try:
-                evidence_ids = tuple(
-                    UUID(event_id) for event_id in candidate.evidence_event_ids
-                )
-            except ValueError as error:
+            if str(event_evidence.evidence_id) not in candidate.evidence_ids:
                 raise ModelOutputError(
-                    "candidate evidence_event_ids must contain UUID strings"
-                ) from error
-            if event.event_id not in evidence_ids:
-                raise ModelOutputError(
-                    "candidate must cite the source event as evidence"
+                    "candidate must cite the source evidence"
                 )
             contributions.append(
-                Contribution(
+                CognitiveContribution.set_from_event(
+                    event,
                     contribution_id=contribution_id(
                         event.event_id,
                         SOURCE_MODULE,
                         candidate.target_field,
                     ),
-                    target_subject_id=event.actor_id,
                     target_field=candidate.target_field,
+                    cognition_type=candidate.cognition_type,
                     value=candidate.value,
                     confidence=candidate.confidence,
-                    evidence_event_ids=evidence_ids,
-                    source_event_id=event.event_id,
+                    evidence_refs=(event_evidence, result.response_evidence),
                     source_module=SOURCE_MODULE,
-                    source_model_response_id=result.response_id,
+                    module_version=MODULE_VERSION,
                 )
             )
 

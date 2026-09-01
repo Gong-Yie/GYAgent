@@ -1,9 +1,11 @@
-from self_cognition.core.contributions import Contribution
-from self_cognition.core.events import Event
+from self_cognition.core.contributions import CognitiveContribution, CognitionType
+from self_cognition.core.evidence import EvidenceRef
+from self_cognition.core.events import EventEnvelope
 from self_cognition.core.ids import contribution_id
 
 
 SOURCE_MODULE = "semantic.preference_extractor"
+MODULE_VERSION = "1"
 TARGET_FIELD = "preferences.study_time"
 STUDY_TIME_PREFERENCES = {
     "喜欢晚上学习": "晚上",
@@ -14,29 +16,30 @@ STUDY_TIME_PREFERENCES = {
 class PreferenceExtractor:
     subscriptions = frozenset({"user.message"})
 
-    def process(self, event: Event) -> tuple[Contribution, ...]:
+    def process(self, event: EventEnvelope) -> tuple[CognitiveContribution, ...]:
         matched_values = {
             preference_value
             for phrase, preference_value in STUDY_TIME_PREFERENCES.items()
-            if phrase in event.content
+            if phrase in event.payload.text
         }
         if len(matched_values) != 1:
             return ()
         value = matched_values.pop()
 
         return (
-            Contribution(
+            CognitiveContribution.set_from_event(
+                event,
                 contribution_id=contribution_id(
                     event.event_id,
                     SOURCE_MODULE,
                     TARGET_FIELD,
                 ),
-                target_subject_id=event.actor_id,
                 target_field=TARGET_FIELD,
+                cognition_type=CognitionType.PREFERENCE,
                 value=value,
                 confidence=1.0,
-                evidence_event_ids=(event.event_id,),
-                source_event_id=event.event_id,
+                evidence_refs=(EvidenceRef.for_event(event),),
                 source_module=SOURCE_MODULE,
+                module_version=MODULE_VERSION,
             ),
         )

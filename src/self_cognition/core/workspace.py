@@ -1,8 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime
-from uuid import UUID
-
 from self_cognition.core.affect import decay_assessment
+from self_cognition.core.evidence import EvidenceRef
 from self_cognition.core.indexes import WorkspaceIndex
 from self_cognition.core.state import SubjectState
 from self_cognition.core.time import Clock, SYSTEM_CLOCK
@@ -35,7 +34,7 @@ NARRATIVE_STAGE_ORDER = {
 class WorkspaceItem:
     target_field: str
     content: object
-    evidence_event_ids: tuple[UUID, ...]
+    evidence_refs: tuple[EvidenceRef, ...]
     confidence: float
     selection_reason: str
 
@@ -99,7 +98,7 @@ class WorkspaceBuilder:
                     WorkspaceItem(
                         target_field=target_field,
                         content=content,
-                        evidence_event_ids=entry.evidence_event_ids,
+                        evidence_refs=entry.evidence_refs,
                         confidence=entry.confidence,
                         selection_reason="question maps to this state field",
                     )

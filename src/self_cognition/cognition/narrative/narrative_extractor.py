@@ -1,9 +1,11 @@
-from self_cognition.core.contributions import Contribution
-from self_cognition.core.events import Event
+from self_cognition.core.contributions import CognitiveContribution, CognitionType
+from self_cognition.core.evidence import EvidenceRef
+from self_cognition.core.events import EventEnvelope
 from self_cognition.core.ids import contribution_id
 
 
 SOURCE_MODULE = "narrative.narrative_extractor"
+MODULE_VERSION = "1"
 NARRATIVE_EVENTS = {
     "我开始准备研究项目": ("启动", "开始准备研究项目"),
     "今天我开始准备研究项目": ("启动", "开始准备研究项目"),
@@ -16,8 +18,8 @@ class NarrativeExtractor:
 
     subscriptions = frozenset({"user.message"})
 
-    def process(self, event: Event) -> tuple[Contribution, ...]:
-        chapter = NARRATIVE_EVENTS.get(event.content)
+    def process(self, event: EventEnvelope) -> tuple[CognitiveContribution, ...]:
+        chapter = NARRATIVE_EVENTS.get(event.payload.text)
         if chapter is None:
             return ()
 
@@ -27,14 +29,15 @@ class NarrativeExtractor:
             f"narrative.chapter.{occurred_at}.{event.event_id}"
         )
         return (
-            Contribution(
+            CognitiveContribution.set_from_event(
+                event,
                 contribution_id=contribution_id(
                     event.event_id,
                     SOURCE_MODULE,
                     target_field,
                 ),
-                target_subject_id=event.actor_id,
                 target_field=target_field,
+                cognition_type=CognitionType.INFERENCE,
                 value={
                     "theme": "研究项目",
                     "stage": stage,
@@ -42,8 +45,8 @@ class NarrativeExtractor:
                     "occurred_at": occurred_at,
                 },
                 confidence=1.0,
-                evidence_event_ids=(event.event_id,),
-                source_event_id=event.event_id,
+                evidence_refs=(EvidenceRef.for_event(event),),
                 source_module=SOURCE_MODULE,
+                module_version=MODULE_VERSION,
             ),
         )

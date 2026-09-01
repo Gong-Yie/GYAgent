@@ -37,7 +37,7 @@ def test_cli_persists_state_and_answers_after_a_new_process_setup(tmp_path, caps
     assert second_output["old_version"] == 1
     assert second_output["new_version"] == 1
     assert second_output["response"] == "你喜欢晚上学习。"
-    assert len(second_output["source_event_ids"]) == 1
+    assert len(second_output["evidence_refs"]) == 1
 
 
 def test_cli_returns_nonzero_for_a_failed_persistent_dependency(tmp_path, capsys):
@@ -84,7 +84,7 @@ def test_cli_reloads_and_expresses_a_persisted_preference_conflict(
     assert second_output["response"] == (
         "你的学习时间偏好存在冲突：同时提到了早上和晚上。"
     )
-    assert len(second_output["source_event_ids"]) == 1
+    assert len(second_output["evidence_refs"]) == 1
 
 
 def test_cli_requires_confirmation_to_change_persisted_identity(
@@ -122,7 +122,7 @@ def test_cli_requires_confirmation_to_change_persisted_identity(
     confirmed_output = json.loads(capsys.readouterr().out)
 
     assert confirmed_output["response"] == "你的角色是学习助手。"
-    assert len(confirmed_output["source_event_ids"]) == 2
+    assert len(confirmed_output["evidence_refs"]) == 2
 
 
 def test_cli_reloads_scoped_affect_and_answers_with_evidence(tmp_path, capsys):
@@ -148,7 +148,7 @@ def test_cli_reloads_scoped_affect_and_answers_with_evidence(tmp_path, capsys):
     output = json.loads(capsys.readouterr().out)
 
     assert output["response"].startswith("你对这次考试感到开心")
-    assert len(output["source_event_ids"]) == 1
+    assert len(output["evidence_refs"]) == 1
 
 
 def test_cli_persists_and_answers_an_ordered_project_narrative(tmp_path, capsys):
@@ -172,4 +172,4 @@ def test_cli_persists_and_answers_an_ordered_project_narrative(tmp_path, capsys)
     assert output["response"] == (
         "你的项目叙事是：先是开始准备研究项目，后来完成研究项目。"
     )
-    assert len(output["source_event_ids"]) == 2
+    assert len(output["evidence_refs"]) == 2
