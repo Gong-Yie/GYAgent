@@ -1,3 +1,4 @@
+from self_cognition.core.cognition import CognitionRequest
 from self_cognition.core.contributions import CognitiveContribution, CognitionType
 from self_cognition.core.evidence import EvidenceRef
 from self_cognition.core.events import EventEnvelope
@@ -17,6 +18,15 @@ class NarrativeExtractor:
     """Creates one evidence-backed chapter for each known project stage."""
 
     subscriptions = frozenset({"user.message"})
+    module_id = SOURCE_MODULE
+    module_version = MODULE_VERSION
+    deterministic = True
+
+    def run(
+        self,
+        request: CognitionRequest,
+    ) -> tuple[CognitiveContribution, ...]:
+        return self.process(request.event)
 
     def process(self, event: EventEnvelope) -> tuple[CognitiveContribution, ...]:
         chapter = NARRATIVE_EVENTS.get(event.payload.text)

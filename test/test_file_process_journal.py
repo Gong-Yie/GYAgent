@@ -254,7 +254,11 @@ def test_completed_event_is_not_processed_twice(tmp_path: Path) -> None:
     assert tuple(
         stored.event_type
         for stored in event_store.read_by_subject(event.subject)
-    ) == ("user.message", "state.reduced")
+    ) == (
+        "user.message",
+        "cognition.module_result",
+        "state.reduced",
+    )
 
 
 def test_event_write_failure_does_not_create_processing_record(

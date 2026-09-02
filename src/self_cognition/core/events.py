@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -69,6 +71,64 @@ class ModelResponsePayload:
 
 
 @dataclass(frozen=True, slots=True)
+class CognitionModuleResultPayload:
+    module_id: str
+    module_version: str
+    deterministic: bool
+    status: str
+    contributions: tuple["CognitiveContribution", ...]
+    response_event_ids: tuple[UUID, ...] = ()
+    failure_type: str | None = None
+    error_type: str | None = None
+
+    def __post_init__(self) -> None:
+        from self_cognition.core.contributions import CognitiveContribution
+
+        _require_non_blank(self.module_id, "module_id")
+        _require_non_blank(self.module_version, "module_version")
+        if not isinstance(self.deterministic, bool):
+            raise ContractValidationError("deterministic must be a boolean")
+        if self.status not in {"succeeded", "failed", "cancelled"}:
+            raise ContractValidationError("cognition result status is invalid")
+        if any(
+            not isinstance(contribution, CognitiveContribution)
+            for contribution in self.contributions
+        ):
+            raise ContractValidationError(
+                "cognition result contributions are invalid"
+            )
+        if any(
+            contribution.source_module != self.module_id
+            or contribution.module_version != self.module_version
+            for contribution in self.contributions
+        ):
+            raise ContractValidationError(
+                "cognition result contributions do not match module metadata"
+            )
+        if any(
+            not isinstance(event_id, UUID) for event_id in self.response_event_ids
+        ):
+            raise ContractValidationError("response_event_ids must contain UUIDs")
+        failed = self.status != "succeeded"
+        if failed != (self.failure_type is not None):
+            raise ContractValidationError(
+                "failed cognition results require a failure type"
+            )
+        if failed != (self.error_type is not None):
+            raise ContractValidationError(
+                "failed cognition results require an error type"
+            )
+        if self.failure_type is not None:
+            _require_non_blank(self.failure_type, "failure_type")
+        if self.error_type is not None:
+            _require_non_blank(self.error_type, "error_type")
+        if failed and self.contributions:
+            raise ContractValidationError(
+                "failed cognition results cannot contain contributions"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class StateReductionPayload:
     old_version: int
     new_version: int
@@ -100,6 +160,7 @@ EventPayload = (
     UserMessagePayload
     | CognitionCorrectionPayload
     | ModelResponsePayload
+    | CognitionModuleResultPayload
     | StateReductionPayload
     | ProcessingFailurePayload
 )
@@ -134,6 +195,7 @@ class EventEnvelope:
             "user.message": UserMessagePayload,
             "user.correction": CognitionCorrectionPayload,
             "model.response": ModelResponsePayload,
+            "cognition.module_result": CognitionModuleResultPayload,
             "state.reduced": StateReductionPayload,
             "processing.failed": ProcessingFailurePayload,
         }
@@ -305,6 +367,32 @@ class EventEnvelope:
             occurred_at=now,
             recorded_at=now,
             source=EventSource.MODEL,
+            scope=cause.scope,
+            causation_id=cause.event_id,
+            correlation_id=correlation_id,
+            run_id=run_id,
+        )
+
+    @classmethod
+    def cognition_module_result(
+        cls,
+        cause: "EventEnvelope",
+        payload: CognitionModuleResultPayload,
+        *,
+        clock: Clock,
+        run_id: UUID,
+        correlation_id: UUID,
+    ) -> "EventEnvelope":
+        now = clock.now()
+        return cls(
+            event_id=new_event_id(),
+            event_type="cognition.module_result",
+            actor=None,
+            subject=cause.subject,
+            payload=payload,
+            occurred_at=now,
+            recorded_at=now,
+            source=EventSource.SYSTEM,
             scope=cause.scope,
             causation_id=cause.event_id,
             correlation_id=correlation_id,

@@ -15,6 +15,7 @@ from self_cognition.core.errors import (
 )
 from self_cognition.core.evidence import EvidenceRef, EvidenceSourceKind
 from self_cognition.core.events import (
+    CognitionModuleResultPayload,
     CognitionCorrectionPayload,
     EVENT_SCHEMA_VERSION,
     EventEnvelope,
@@ -465,6 +466,7 @@ def _event_payload_to_dict(
         UserMessagePayload
         | CognitionCorrectionPayload
         | ModelResponsePayload
+        | CognitionModuleResultPayload
         | StateReductionPayload
         | ProcessingFailurePayload
     ),
@@ -485,6 +487,22 @@ def _event_payload_to_dict(
             "model": payload.model,
             "response_id": payload.response_id,
             "raw_output": payload.raw_output,
+        }
+    if isinstance(payload, CognitionModuleResultPayload):
+        return {
+            "module_id": payload.module_id,
+            "module_version": payload.module_version,
+            "deterministic": payload.deterministic,
+            "status": payload.status,
+            "contributions": [
+                _contribution_to_dict(contribution)
+                for contribution in payload.contributions
+            ],
+            "response_event_ids": [
+                str(event_id) for event_id in payload.response_event_ids
+            ],
+            "failure_type": payload.failure_type,
+            "error_type": payload.error_type,
         }
     if isinstance(payload, ProcessingFailurePayload):
         return {"stage": payload.stage, "error_type": payload.error_type}
@@ -507,6 +525,7 @@ def _event_payload_from_dict(
     UserMessagePayload
     | CognitionCorrectionPayload
     | ModelResponsePayload
+    | CognitionModuleResultPayload
     | StateReductionPayload
     | ProcessingFailurePayload
 ):
@@ -553,6 +572,70 @@ def _event_payload_from_dict(
             raw_output=_require_non_blank_string(
                 values["raw_output"],
                 f"{path}.raw_output",
+            ),
+        )
+    if event_type == "cognition.module_result":
+        _require_keys(
+            values,
+            {
+                "module_id",
+                "module_version",
+                "deterministic",
+                "status",
+                "contributions",
+                "response_event_ids",
+                "failure_type",
+                "error_type",
+            },
+            path,
+        )
+        contributions = values["contributions"]
+        if not isinstance(contributions, list):
+            raise MalformedSerializedDataError(
+                f"{path}.contributions must be an array"
+            )
+        response_event_ids = values["response_event_ids"]
+        if not isinstance(response_event_ids, list):
+            raise MalformedSerializedDataError(
+                f"{path}.response_event_ids must be an array"
+            )
+        deterministic = values["deterministic"]
+        if not isinstance(deterministic, bool):
+            raise MalformedSerializedDataError(
+                f"{path}.deterministic must be a boolean"
+            )
+        return CognitionModuleResultPayload(
+            module_id=_require_non_blank_string(
+                values["module_id"],
+                f"{path}.module_id",
+            ),
+            module_version=_require_non_blank_string(
+                values["module_version"],
+                f"{path}.module_version",
+            ),
+            deterministic=deterministic,
+            status=_require_non_blank_string(
+                values["status"],
+                f"{path}.status",
+            ),
+            contributions=tuple(
+                _contribution_from_dict(
+                    contribution,
+                    f"{path}.contributions[{index}]",
+                )
+                for index, contribution in enumerate(contributions)
+            ),
+            response_event_ids=tuple(
+                _require_uuid(event_id, f"{path}.response_event_ids[{index}]")
+                for index, event_id in enumerate(response_event_ids)
+            ),
+            failure_type=_require_optional_non_blank_string(
+                values["failure_type"],
+                f"{path}.failure_type",
+            ),
+            error_type=_require_optional_non_blank_string(
+                values["error_type"],
+                f"{path}.error_type",
             ),
         )
     if event_type == "state.reduced":

@@ -5,6 +5,7 @@ from self_cognition.core.contributions import (
     CognitionType,
     ContributionOperation,
 )
+from self_cognition.core.cognition import CognitionRequest
 from self_cognition.core.evidence import EvidenceRef
 from self_cognition.core.errors import ModelOutputError, ModelTimeoutError
 from self_cognition.core.events import EventEnvelope
@@ -13,6 +14,7 @@ from self_cognition.core.model_outputs import (
     ModelExtractionResult,
 )
 from self_cognition.runtime.run_context import RunContext
+from self_cognition.core.workspace import RetrievalBudget, RetrievalQuery
 
 
 OUTPUT_SCHEMA = {
@@ -94,13 +96,37 @@ class OpenAIResponsesCognitionModel:
 
     def extract(
         self,
-        event: EventEnvelope,
-        context: RunContext,
+        request: CognitionRequest,
     ) -> ModelExtractionResult:
+        event = request.event
+        context = request.run_context
+        if context is None:
+            raise ValueError("OpenAI cognition requires RunContext")
         timeout = min(self._timeout_seconds, self._remaining_seconds(context))
         if timeout <= 0:
             raise ModelTimeoutError("run deadline reached before model call")
 
+        workspace = request.context.query(
+            RetrievalQuery(
+                subject=event.subject,
+                task=event.payload.text,
+                purpose="cognition:semantic",
+                budget=RetrievalBudget(max_tokens=512, max_items=8),
+            )
+        )
+        workspace_text = json.dumps(
+            [
+                {
+                    "target_field": item.target_field,
+                    "content": item.content,
+                    "confidence": item.confidence,
+                }
+                for item in workspace.items
+            ],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
         try:
             response = self._client.responses.create(
                 model=self._model,
@@ -114,7 +140,8 @@ class OpenAIResponsesCognitionModel:
                     "subject_id="
                     f"{event.subject.subject.subject_id}\n"
                     f"event_type={event.event_type}\n"
-                    f"content={event.payload.text}"
+                    f"content={event.payload.text}\n"
+                    f"authorized_context={workspace_text}"
                 ),
                 text={
                     "format": {

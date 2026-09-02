@@ -12,8 +12,14 @@ from self_cognition.core.errors import (
     ModelTimeoutError,
     RunCancelledError,
 )
+from self_cognition.core.cognition import (
+    CognitionFailureType,
+    CognitionModuleResult,
+    CognitionResultStatus,
+)
 from self_cognition.core.evidence import EvidenceRef
 from self_cognition.core.events import (
+    CognitionModuleResultPayload,
     CognitionCorrectionPayload,
     EventEnvelope,
     StateReductionPayload,
@@ -30,7 +36,7 @@ from self_cognition.core.protocols import (
     StateRepository,
 )
 from self_cognition.core.state import SubjectState
-from self_cognition.runtime.engine import CognitionEngine
+from self_cognition.runtime.engine import CognitionEngine, raise_terminal_failure
 from self_cognition.runtime.run_context import RunContext
 from self_cognition.memory.service import MemoryEncodingService
 
@@ -209,8 +215,37 @@ class ProcessEventService:
                     payload.target_field,
                     payload.corrected_memory_id,
                 )
-            new_state = self._engine.process(recorded_event, old_state, context)
-            self._append_emitted_events(context)
+            stored_results = self._stored_cognition_results(recorded_event)
+            reusable_results = self._reusable_results(stored_results)
+            cognition_results = self._engine.analyze(
+                recorded_event,
+                old_state,
+                context,
+                existing_results=reusable_results,
+            )
+            new_results = tuple(
+                result
+                for result in cognition_results
+                if result.module_id
+                not in {stored.module_id for stored in reusable_results}
+            )
+            if new_results:
+                self._append_cognition_results(
+                    recorded_event,
+                    context,
+                    new_results,
+                )
+            raise_terminal_failure(cognition_results)
+            if context.is_cancelled:
+                if not event_is_claimed:
+                    self.finalize_cancellation(recorded_event, context)
+                return self._cancelled_result(context, event_saved, old_state)
+
+            new_state = self._engine.reduce(
+                old_state,
+                cognition_results,
+                decided_at=recorded_event.recorded_at,
+            )
             if context.is_cancelled:
                 if not event_is_claimed:
                     self.finalize_cancellation(recorded_event, context)
@@ -273,7 +308,7 @@ class ProcessEventService:
                     self.finalize_failure(
                         recorded_event,
                         context,
-                        error_type=type(error).__name__,
+                        error_type=self._error_type(error),
                     )
                 except Exception:
                     logger.exception("failed to persist processing failure event")
@@ -286,7 +321,7 @@ class ProcessEventService:
                 state_changed=None,
                 state=None,
                 event_saved=event_saved,
-                error_type=type(error).__name__,
+                error_type=self._error_type(error),
                 retryable=self._is_retryable(error),
             )
 
@@ -315,6 +350,100 @@ class ProcessEventService:
     def _append_event(self, event: EventEnvelope) -> None:
         self._event_store.append(event)
         self._evidence_repository.append(EvidenceRef.for_event(event))
+
+    def _append_events(self, events: tuple[EventEnvelope, ...]) -> None:
+        self._event_store.append_many(events)
+        for event in events:
+            self._evidence_repository.append(EvidenceRef.for_event(event))
+
+    def _append_cognition_results(
+        self,
+        cause: EventEnvelope,
+        context: RunContext,
+        results: tuple[CognitionModuleResult, ...],
+    ) -> None:
+        events: list[EventEnvelope] = []
+        for result in results:
+            events.extend(result.emitted_events)
+            response_event_ids = tuple(
+                event.event_id
+                for event in result.emitted_events
+                if event.event_type == "model.response"
+            )
+            events.append(
+                EventEnvelope.cognition_module_result(
+                    cause,
+                    CognitionModuleResultPayload(
+                        module_id=result.module_id,
+                        module_version=result.module_version,
+                        deterministic=result.deterministic,
+                        status=result.status.value,
+                        contributions=result.contributions,
+                        response_event_ids=response_event_ids,
+                        failure_type=(
+                            result.failure_type.value
+                            if result.failure_type is not None
+                            else None
+                        ),
+                        error_type=result.error_type,
+                    ),
+                    clock=context.clock,
+                    run_id=context.run_id,
+                    correlation_id=context.correlation_id,
+                )
+            )
+        if events:
+            self._append_events(tuple(events))
+
+    def _stored_cognition_results(
+        self,
+        cause: EventEnvelope,
+    ) -> tuple[CognitionModuleResult, ...]:
+        stored: list[CognitionModuleResult] = []
+        for event in self._event_store.read_by_subject(cause.subject):
+            if (
+                event.event_type != "cognition.module_result"
+                or event.causation_id != cause.event_id
+                or not isinstance(event.payload, CognitionModuleResultPayload)
+            ):
+                continue
+            payload = event.payload
+            stored.append(
+                CognitionModuleResult(
+                    module_id=payload.module_id,
+                    module_version=payload.module_version,
+                    deterministic=payload.deterministic,
+                    status=CognitionResultStatus(payload.status),
+                    contributions=payload.contributions,
+                    failure_type=(
+                        CognitionFailureType(payload.failure_type)
+                        if payload.failure_type is not None
+                        else None
+                    ),
+                    error_type=payload.error_type,
+                )
+            )
+        return tuple(stored)
+
+    @staticmethod
+    def _reusable_results(
+        results: tuple[CognitionModuleResult, ...],
+    ) -> tuple[CognitionModuleResult, ...]:
+        reusable: dict[str, CognitionModuleResult] = {}
+        for result in results:
+            if result.status is CognitionResultStatus.SUCCEEDED:
+                reusable[result.module_id] = result
+                continue
+            if result.status is CognitionResultStatus.CANCELLED:
+                continue
+            retryable = (
+                result.failure_type is CognitionFailureType.TIMEOUT
+                or result.error_type
+                in {"OSError", "FileLockUnavailableError", "ModelTimeoutError"}
+            )
+            if not retryable:
+                reusable[result.module_id] = result
+        return tuple(reusable.values())
 
     def _append_emitted_events(self, context: RunContext) -> None:
         for event in context.drain_emitted_events():
@@ -407,3 +536,8 @@ class ProcessEventService:
             error,
             (OSError, FileLockUnavailableError, ModelTimeoutError),
         )
+
+    @staticmethod
+    def _error_type(error: Exception) -> str:
+        recorded = getattr(error, "recorded_error_type", None)
+        return recorded if isinstance(recorded, str) else type(error).__name__

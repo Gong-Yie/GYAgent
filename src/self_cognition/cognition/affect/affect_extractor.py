@@ -1,3 +1,4 @@
+from self_cognition.core.cognition import CognitionRequest
 from self_cognition.core.contributions import CognitiveContribution, CognitionType
 from self_cognition.core.evidence import EvidenceRef
 from self_cognition.core.events import EventEnvelope
@@ -36,6 +37,15 @@ class AffectExtractor:
     """Produces one structured, scoped affect assessment per known event."""
 
     subscriptions = frozenset({"user.message"})
+    module_id = SOURCE_MODULE
+    module_version = MODULE_VERSION
+    deterministic = True
+
+    def run(
+        self,
+        request: CognitionRequest,
+    ) -> tuple[CognitiveContribution, ...]:
+        return self.process(request.event)
 
     def process(self, event: EventEnvelope) -> tuple[CognitiveContribution, ...]:
         assessment = AFFECT_STATEMENTS.get(event.payload.text)

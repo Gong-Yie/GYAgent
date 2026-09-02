@@ -1,3 +1,4 @@
+from self_cognition.core.cognition import CognitionRequest
 from self_cognition.core.contributions import (
     CognitiveContribution,
     CognitionType,
@@ -8,6 +9,7 @@ from self_cognition.core.ids import contribution_id
 
 
 SOURCE_MODULE = "identity.identity_value_extractor"
+MODULE_VERSION = "1"
 STATEMENT_PREFIXES = (
     (
         "我确认将最重视的原则改为",
@@ -25,6 +27,15 @@ class IdentityValueExtractor:
     """Extracts explicit role and value statements with confirmation intent."""
 
     subscriptions = frozenset({"user.message"})
+    module_id = SOURCE_MODULE
+    module_version = MODULE_VERSION
+    deterministic = True
+
+    def run(
+        self,
+        request: CognitionRequest,
+    ) -> tuple[CognitiveContribution, ...]:
+        return self.process(request.event)
 
     def process(
         self,
@@ -57,7 +68,7 @@ class IdentityValueExtractor:
                     confidence=1.0,
                     evidence_refs=(EvidenceRef.for_event(event),),
                     source_module=SOURCE_MODULE,
-                    module_version="1",
+                    module_version=MODULE_VERSION,
                     explicitly_confirmed=explicitly_confirmed,
                 ),
             )

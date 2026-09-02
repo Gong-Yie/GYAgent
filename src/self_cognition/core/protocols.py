@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING
 from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from self_cognition.core.contributions import CognitiveContribution
+from self_cognition.core.cognition import CognitionRequest
 from self_cognition.core.deletions import DeletionPlan, DeletionStatus
 from self_cognition.core.evidence import EvidenceRef
 from self_cognition.core.events import EventEnvelope
@@ -19,28 +19,16 @@ from self_cognition.core.processing import (
 from self_cognition.core.scopes import SubjectScope
 from self_cognition.core.state import SubjectState
 
-if TYPE_CHECKING:
-    from self_cognition.runtime.run_context import RunContext
-
-
 @runtime_checkable
 class CognitiveModule(Protocol):
     subscriptions: frozenset[str]
+    module_id: str
+    module_version: str
+    deterministic: bool
 
-    def process(
+    def run(
         self,
-        event: EventEnvelope,
-    ) -> tuple[CognitiveContribution, ...]: ...
-
-
-@runtime_checkable
-class ContextualCognitiveModule(Protocol):
-    subscriptions: frozenset[str]
-
-    def process(
-        self,
-        event: EventEnvelope,
-        context: RunContext,
+        request: CognitionRequest,
     ) -> tuple[CognitiveContribution, ...]: ...
 
 
@@ -48,14 +36,15 @@ class ContextualCognitiveModule(Protocol):
 class CognitionModel(Protocol):
     def extract(
         self,
-        event: EventEnvelope,
-        context: RunContext,
+        request: CognitionRequest,
     ) -> ModelExtractionResult: ...
 
 
 @runtime_checkable
 class EventStore(Protocol):
     def append(self, event: EventEnvelope) -> None: ...
+
+    def append_many(self, events: tuple[EventEnvelope, ...]) -> None: ...
 
     def read_by_subject(
         self,

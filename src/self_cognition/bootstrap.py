@@ -144,10 +144,14 @@ def build_container(
         module_registrations or _default_module_registrations(),
         resolved_settings.enabled_modules,
     )
+    workspace_builder = WorkspaceBuilder(
+        HybridWorkspaceRetriever(memory_repository)
+    )
     engine = CognitionEngine(
         modules=module_registry.all_modules(),
         cognitive_space=CognitiveSpaceService(StateReducer()),
         module_registry=module_registry,
+        workspace_builder=workspace_builder,
     )
     process_event = ProcessEventService(
         event_store=event_store,
@@ -206,9 +210,7 @@ def build_container(
         process_event=process_event,
         event_bus=event_bus,
         replay=replay,
-        workspace_builder=WorkspaceBuilder(
-            HybridWorkspaceRetriever(memory_repository)
-        ),
+        workspace_builder=workspace_builder,
         dialogue_model=selected_dialogue_model,
         module_registry=module_registry,
         lifecycle=lifecycle,

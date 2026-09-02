@@ -31,7 +31,10 @@ class FileEventStore:
 
     def append(self, event: EventEnvelope) -> None:
         with self._lock:
-            if event.event_id in self._event_ids or event.event_id in self._tombstones:
+            if (
+                event.event_id in self._event_ids
+                or event.event_id in self._tombstones
+            ):
                 return
 
             self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -43,6 +46,27 @@ class FileEventStore:
 
             self._events.append(event)
             self._event_ids.add(event.event_id)
+
+    def append_many(self, events: tuple[EventEnvelope, ...]) -> None:
+        with self._lock:
+            pending = tuple(
+                event
+                for event in events
+                if event.event_id not in self._event_ids
+                and event.event_id not in self._tombstones
+            )
+            if not pending:
+                return
+            if len({event.event_id for event in pending}) != len(pending):
+                raise ValueError("event batch contains duplicate IDs")
+
+            records = (*self._events, *pending)
+            atomic_write_text(
+                self._path,
+                "".join(event_to_json(event) + "\n" for event in records),
+            )
+            self._events.extend(pending)
+            self._event_ids.update(event.event_id for event in pending)
 
     def read_by_subject(
         self,

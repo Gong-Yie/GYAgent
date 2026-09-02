@@ -243,6 +243,7 @@ def test_failure_result_preserves_error_type_and_correlation_id():
         for stored_event in event_store.read_by_subject(event.subject)
     ) == (
         "user.message",
+        "cognition.module_result",
         "processing.failed",
     )
     assert state_repository.load("user-1") is None

@@ -181,7 +181,7 @@ def test_one_module_failure_does_not_block_independent_modules():
     class FailingModule:
         subscriptions = frozenset({"user.message"})
 
-        def process(self, event: Event) -> tuple[Contribution, ...]:
+        def process(self, event: Event) -> tuple[CognitiveContribution, ...]:
             raise RuntimeError("module failure")
 
     event = Event.user_message("user-1", "我喜欢晚上学习")

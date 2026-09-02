@@ -20,6 +20,7 @@ class ModuleRegistration:
     version: str
     module: CognitiveModule
     enabled: bool = True
+    deterministic: bool | None = None
 
     def __post_init__(self) -> None:
         if not self.module_id.strip():
@@ -28,6 +29,14 @@ class ModuleRegistration:
             raise ValueError("module category must not be blank")
         if not self.version.strip():
             raise ValueError("module version must not be blank")
+        if self.deterministic is None:
+            object.__setattr__(
+                self,
+                "deterministic",
+                bool(getattr(self.module, "deterministic", True)),
+            )
+        elif not isinstance(self.deterministic, bool):
+            raise ValueError("module deterministic flag must be a boolean")
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +77,14 @@ class CognitiveModuleRegistry:
         with self._lock:
             return tuple(
                 registration.module
+                for module_id, registration in self._registrations.items()
+                if self._health[module_id] is not ModuleHealth.DISABLED
+            )
+
+    def active_registrations(self) -> tuple[ModuleRegistration, ...]:
+        with self._lock:
+            return tuple(
+                registration
                 for module_id, registration in self._registrations.items()
                 if self._health[module_id] is not ModuleHealth.DISABLED
             )

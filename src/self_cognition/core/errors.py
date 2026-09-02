@@ -44,3 +44,15 @@ class ModelOutputError(CognitionError):
 
 class ModelTimeoutError(CognitionError):
     """Raised when a cognition model exceeds its allowed response time."""
+
+
+class MissingCognitionResultError(CognitionError):
+    """Raised when replay would need to rerun a nondeterministic module."""
+
+
+class PersistedCognitionFailureError(CognitionError):
+    """Replays a previously recorded module failure without invoking it."""
+
+    def __init__(self, recorded_error_type: str) -> None:
+        super().__init__(f"persisted cognition failure: {recorded_error_type}")
+        self.recorded_error_type = recorded_error_type
