@@ -37,3 +37,15 @@ class InMemoryEvidenceRepository:
                 for evidence in self._evidence.values()
                 if evidence.scope.owner == subject
             )
+
+    def delete(
+        self,
+        subject: SubjectScope,
+        evidence_ids: tuple[UUID, ...],
+    ) -> None:
+        with self._lock:
+            for evidence_id in evidence_ids:
+                key = (subject.mind.mind_id, evidence_id)
+                evidence = self._evidence.get(key)
+                if evidence is not None and evidence.scope.owner == subject:
+                    self._evidence.pop(key)

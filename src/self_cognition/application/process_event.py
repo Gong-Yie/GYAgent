@@ -13,7 +13,11 @@ from self_cognition.core.errors import (
     RunCancelledError,
 )
 from self_cognition.core.evidence import EvidenceRef
-from self_cognition.core.events import EventEnvelope, StateReductionPayload
+from self_cognition.core.events import (
+    CognitionCorrectionPayload,
+    EventEnvelope,
+    StateReductionPayload,
+)
 from self_cognition.core.processing import (
     PROCESS_EVENT_FAILED,
     RUN_CANCELLED,
@@ -28,6 +32,7 @@ from self_cognition.core.protocols import (
 from self_cognition.core.state import SubjectState
 from self_cognition.runtime.engine import CognitionEngine
 from self_cognition.runtime.run_context import RunContext
+from self_cognition.memory.service import MemoryEncodingService
 
 
 logger = logging.getLogger(__name__)
@@ -41,12 +46,14 @@ class ProcessEventService:
         state_repository: StateRepository,
         engine: CognitionEngine,
         process_journal: ProcessJournal | None = None,
+        memory_encoding: MemoryEncodingService | None = None,
     ) -> None:
         self._event_store = event_store
         self._evidence_repository = evidence_repository
         self._state_repository = state_repository
         self._engine = engine
         self._process_journal = process_journal
+        self._memory_encoding = memory_encoding
 
     def process(
         self,
@@ -154,6 +161,7 @@ class ProcessEventService:
                 processing_record is not None
                 and processing_record.status is ProcessingStatus.COMPLETED
             ):
+                self._encode_memories(old_state, recorded_event)
                 self._process_journal.complete(
                     recorded_event.event_id,
                     context.run_id,
@@ -191,6 +199,16 @@ class ProcessEventService:
                     self.finalize_cancellation(recorded_event, context)
                 return self._cancelled_result(context, event_saved, old_state)
 
+            payload = recorded_event.payload
+            if (
+                self._memory_encoding is not None
+                and isinstance(payload, CognitionCorrectionPayload)
+            ):
+                self._memory_encoding.validate_correction(
+                    recorded_event.subject,
+                    payload.target_field,
+                    payload.corrected_memory_id,
+                )
             new_state = self._engine.process(recorded_event, old_state, context)
             self._append_emitted_events(context)
             if context.is_cancelled:
@@ -204,6 +222,7 @@ class ProcessEventService:
                     new_state,
                     expected_version=old_state.version,
                 )
+            self._encode_memories(new_state, recorded_event)
 
             reduction_event = EventEnvelope.state_reduced(
                 recorded_event,
@@ -300,6 +319,45 @@ class ProcessEventService:
     def _append_emitted_events(self, context: RunContext) -> None:
         for event in context.drain_emitted_events():
             self._append_event(event)
+
+    def _encode_memories(
+        self,
+        state: SubjectState,
+        event: EventEnvelope,
+    ) -> None:
+        if self._memory_encoding is None:
+            return
+        encoded = self._memory_encoding.encode_changes(state.changes)
+        payload = event.payload
+        if not isinstance(payload, CognitionCorrectionPayload):
+            return
+        replacement = next(
+            (
+                record
+                for record in encoded
+                if any(
+                    source.target_field == payload.target_field
+                    for source in record.sources
+                )
+                and any(
+                    evidence.evidence_id == event.event_id
+                    for evidence in record.evidence_refs
+                )
+            ),
+            None,
+        )
+        if replacement is None:
+            raise ContractValidationError(
+                "correction did not produce a replacement memory"
+            )
+        self._memory_encoding.supersede_for_correction(
+            event.subject,
+            payload.target_field,
+            replacement.memory_id,
+            corrected_memory_id=payload.corrected_memory_id,
+            changed_at=event.recorded_at,
+            correction_event_id=event.event_id,
+        )
 
     def _fail_journal(
         self,

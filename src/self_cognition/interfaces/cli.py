@@ -13,6 +13,7 @@ from self_cognition.core.events import EventEnvelope
 from self_cognition.core.ids import new_correlation_id, new_run_id
 from self_cognition.core.scopes import SubjectScope
 from self_cognition.core.time import SYSTEM_CLOCK
+from self_cognition.core.workspace import WorkspaceRunInfo
 from self_cognition.runtime.run_context import RunContext
 
 
@@ -52,7 +53,7 @@ def main(
                 correlation_id=context.correlation_id,
             )
             result = dependencies.process_event.process(event, context)
-            output = _result_output(dependencies, args.message, result)
+            output = _result_output(dependencies, args.message, result, context)
         print(json.dumps(output, ensure_ascii=False, sort_keys=True))
         return 0 if result.status is ProcessEventStatus.SUCCEEDED else 1
     except Exception as error:
@@ -71,6 +72,7 @@ def _result_output(
     dependencies: ApplicationContainer,
     message: str,
     result: ProcessEventResult,
+    context: RunContext,
 ) -> dict[str, object]:
     output: dict[str, object] = {
         "status": result.status.value,
@@ -87,7 +89,16 @@ def _result_output(
     if result.state is not None:
         response = dependencies.dialogue_model.respond(
             message,
-            dependencies.workspace_builder.build(message, result.state),
+            dependencies.workspace_builder.build(
+                message,
+                result.state,
+                run_info=WorkspaceRunInfo(
+                    run_id=context.run_id,
+                    correlation_id=context.correlation_id,
+                    deadline=context.deadline,
+                    cancelled=context.is_cancelled,
+                ),
+            ),
         )
         output["response"] = response.text
         output["evidence_refs"] = [

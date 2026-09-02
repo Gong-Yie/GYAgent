@@ -57,6 +57,15 @@ class FileStateRepository:
                 "new state version must be greater than stored state version"
             )
 
+        self._write(state)
+
+    def replace(self, state: SubjectState) -> None:
+        self._write(state)
+
+    def delete(self, subject: SubjectScope) -> None:
+        self._path_for(subject).unlink(missing_ok=True)
+
+    def _write(self, state: SubjectState) -> None:
         target = self._path_for(state.subject_scope)
         payload = state_to_json(state)
         temporary_path: Path | None = None

@@ -113,11 +113,11 @@ def test_indexed_workspace_matches_unindexed_workspace_and_reads_state_content()
     builder = WorkspaceBuilder()
 
     for question in ("我经历过什么？", "我的项目经历如何发展？"):
-        assert builder.build(question, state) == builder.build(
+        assert builder.build(question, state).items == builder.build(
             question,
             state,
             index=index,
-        )
+        ).items
 
 
 def test_stale_or_foreign_index_falls_back_without_leaking_indexed_fields():

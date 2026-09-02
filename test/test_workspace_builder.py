@@ -23,18 +23,15 @@ def test_selects_only_the_study_time_preference_for_the_question():
 
     workspace = WorkspaceBuilder().build("我喜欢什么时候学习？", state)
 
-    assert workspace == Workspace(
-        subject_id="user-1",
-        state_version=2,
-        items=(
-            WorkspaceItem(
-                target_field="preferences.study_time",
-                content="晚上",
-                evidence_refs=(EvidenceRef.for_event(preference_event),),
-                confidence=1.0,
-                selection_reason="question maps to this state field",
-            ),
-        ),
+    assert workspace.subject_id == "user-1"
+    assert workspace.state_version == 2
+    assert workspace.task_context == "我喜欢什么时候学习？"
+    assert workspace.fixed_context.current_goal == "我喜欢什么时候学习？"
+    assert len(workspace.items) == 1
+    assert workspace.items[0].target_field == "preferences.study_time"
+    assert workspace.items[0].content == "晚上"
+    assert workspace.items[0].evidence_refs == (
+        EvidenceRef.for_event(preference_event),
     )
     assert all(item.target_field != "profile.name" for item in workspace.items)
 
@@ -45,11 +42,9 @@ def test_empty_state_returns_an_empty_workspace():
         SubjectState.empty("user-1"),
     )
 
-    assert workspace == Workspace(
-        subject_id="user-1",
-        state_version=0,
-        items=(),
-    )
+    assert workspace.subject_id == "user-1"
+    assert workspace.state_version == 0
+    assert workspace.items == ()
 
 
 def test_unmapped_question_does_not_expose_unrelated_state():

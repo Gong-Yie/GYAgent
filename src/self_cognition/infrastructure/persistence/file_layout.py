@@ -28,6 +28,14 @@ class FileDataLayout:
         return self.root / "memories"
 
     @property
+    def memory_access(self) -> Path:
+        return self.root / "memory_access"
+
+    @property
+    def deletions(self) -> Path:
+        return self.root / "deletions"
+
+    @property
     def processing(self) -> Path:
         return self.root / "processing"
 
@@ -81,6 +89,8 @@ class FileDataLayout:
             self.evidence,
             self.states,
             self.memories,
+            self.memory_access,
+            self.deletions,
             self.processing,
             self.indexes,
             self.runs,

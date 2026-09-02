@@ -3,6 +3,7 @@ from pathlib import Path
 
 from self_cognition.application.process_event import ProcessEventService
 from self_cognition.application.replay import ReplayService
+from self_cognition.application.forget import ForgetService
 from self_cognition.blackboard.reducer import StateReducer
 from self_cognition.blackboard.service import CognitiveSpaceService
 from self_cognition.cognition.affect.affect_extractor import AffectExtractor
@@ -19,6 +20,7 @@ from self_cognition.cognition.identity.identity_value_extractor import (
 from self_cognition.cognition.metacognition.conflict_extractor import (
     ConflictMetacognitionExtractor,
 )
+from self_cognition.cognition.metacognition.correction import UserCorrectionModule
 from self_cognition.cognition.narrative.narrative_extractor import (
     NarrativeExtractor,
 )
@@ -27,7 +29,9 @@ from self_cognition.cognition.relationship.relationship_extractor import (
 )
 from self_cognition.core.protocols import (
     EvidenceRepository,
+    DeletionRepository,
     EventStore,
+    MemoryRepository,
     StateRepository,
 )
 from self_cognition.core.workspace import WorkspaceBuilder
@@ -37,7 +41,13 @@ from self_cognition.cognition.semantic.preference_extractor import (
 )
 from self_cognition.executive.dialogue.rule_based import RuleBasedDialogueModel
 from self_cognition.infrastructure.persistence.file_event_store import FileEventStore
+from self_cognition.infrastructure.persistence.file_deletion_repository import (
+    FileDeletionRepository,
+)
 from self_cognition.infrastructure.persistence.file_layout import FileDataLayout
+from self_cognition.infrastructure.persistence.file_memory_repository import (
+    FileMemoryRepository,
+)
 from self_cognition.infrastructure.persistence.file_process_journal import (
     FileProcessJournal,
 )
@@ -53,11 +63,23 @@ from self_cognition.infrastructure.persistence.in_memory_evidence_repository imp
 from self_cognition.runtime.engine import CognitionEngine
 from self_cognition.runtime.event_bus import SingleMachineEventBus
 from self_cognition.lifecycle import ApplicationLifecycle
+from self_cognition.memory.encoder import StateChangeMemoryEncoder
+from self_cognition.memory.behavior import (
+    MemoryConsolidationService,
+    MemoryRetrievalService,
+)
+from self_cognition.memory.service import (
+    MemoryAccessService,
+    MemoryEncodingService,
+    MemoryLifecycleService,
+)
+from self_cognition.workspace.retrieval import HybridWorkspaceRetriever
 from self_cognition.settings import (
     ApplicationSettings,
     DotenvSecretSource,
     load_settings,
 )
+from self_cognition.core.time import SYSTEM_CLOCK
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +89,14 @@ class ApplicationContainer:
     event_store: EventStore
     evidence_repository: EvidenceRepository
     state_repository: StateRepository
+    memory_repository: MemoryRepository
+    memory_encoding: MemoryEncodingService
+    memory_access: MemoryAccessService
+    memory_retrieval: MemoryRetrievalService
+    memory_consolidation: MemoryConsolidationService
+    memory_lifecycle: MemoryLifecycleService
+    deletion_repository: DeletionRepository
+    forget: ForgetService
     process_event: ProcessEventService
     event_bus: SingleMachineEventBus
     replay: ReplayService
@@ -88,9 +118,26 @@ def build_container(
     if data_dir is not None:
         resolved_settings = replace(resolved_settings, data_dir=Path(data_dir))
     layout = FileDataLayout(resolved_settings.data_dir).ensure()
-    event_store = FileEventStore(layout.event_log)
+    event_store = FileEventStore(
+        layout.event_log,
+        layout.deletions / "event_tombstones.jsonl",
+    )
     evidence_repository = InMemoryEvidenceRepository()
     state_repository = FileStateRepository(layout.states)
+    memory_repository = FileMemoryRepository(
+        layout.memories,
+        layout.indexes / "memories",
+        layout.memory_access,
+    )
+    memory_encoding = MemoryEncodingService(
+        memory_repository,
+        StateChangeMemoryEncoder(),
+    )
+    memory_access = MemoryAccessService(memory_repository)
+    memory_retrieval = MemoryRetrievalService(memory_repository)
+    memory_consolidation = MemoryConsolidationService(memory_repository)
+    memory_lifecycle = MemoryLifecycleService(memory_repository)
+    deletion_repository = FileDeletionRepository(layout.deletions)
     process_journal = FileProcessJournal(layout.processing)
     FileProcessingRecovery(layout.event_log, process_journal).reconcile()
     module_registry = _module_registry(
@@ -108,6 +155,7 @@ def build_container(
         state_repository=state_repository,
         engine=engine,
         process_journal=process_journal,
+        memory_encoding=memory_encoding,
     )
     event_bus = SingleMachineEventBus(
         event_store,
@@ -115,6 +163,17 @@ def build_container(
         process_event,
         max_workers=resolved_settings.worker_max_workers,
     )
+    replay = ReplayService(event_store=event_store, engine=engine)
+    forget = ForgetService(
+        event_store=event_store,
+        evidence_repository=evidence_repository,
+        state_repository=state_repository,
+        memory_repository=memory_repository,
+        deletion_repository=deletion_repository,
+        replay=replay,
+        process_journal=process_journal,
+    )
+    forget.recover(now=SYSTEM_CLOCK.now())
     selected_dialogue_model = dialogue_model or RuleBasedDialogueModel()
     lifecycle = ApplicationLifecycle(
         event_bus,
@@ -136,10 +195,20 @@ def build_container(
         event_store=event_store,
         evidence_repository=evidence_repository,
         state_repository=state_repository,
+        memory_repository=memory_repository,
+        memory_encoding=memory_encoding,
+        memory_access=memory_access,
+        memory_retrieval=memory_retrieval,
+        memory_consolidation=memory_consolidation,
+        memory_lifecycle=memory_lifecycle,
+        deletion_repository=deletion_repository,
+        forget=forget,
         process_event=process_event,
         event_bus=event_bus,
-        replay=ReplayService(event_store=event_store, engine=engine),
-        workspace_builder=WorkspaceBuilder(),
+        replay=replay,
+        workspace_builder=WorkspaceBuilder(
+            HybridWorkspaceRetriever(memory_repository)
+        ),
         dialogue_model=selected_dialogue_model,
         module_registry=module_registry,
         lifecycle=lifecycle,
@@ -171,6 +240,12 @@ def _default_module_registrations() -> tuple[ModuleRegistration, ...]:
             "relationship",
             "1",
             RelationshipExtractor(),
+        ),
+        ModuleRegistration(
+            "metacognition.user_correction",
+            "metacognition",
+            "1",
+            UserCorrectionModule(),
         ),
         ModuleRegistration(
             "metacognition.conflict_extractor",

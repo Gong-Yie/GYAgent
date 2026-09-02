@@ -24,3 +24,9 @@ class InMemoryStateRepository:
             )
 
         self._states[subject_scope] = state
+
+    def replace(self, state: SubjectState) -> None:
+        self._states[state.subject_scope] = state
+
+    def delete(self, subject: SubjectScope) -> None:
+        self._states.pop(subject, None)

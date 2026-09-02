@@ -6,8 +6,10 @@ from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from self_cognition.core.contributions import CognitiveContribution
+from self_cognition.core.deletions import DeletionPlan, DeletionStatus
 from self_cognition.core.evidence import EvidenceRef
 from self_cognition.core.events import EventEnvelope
+from self_cognition.core.memories import MemoryAccessRecord, MemoryRecord
 from self_cognition.core.model_outputs import ModelExtractionResult
 from self_cognition.core.processing import (
     OutboxEntry,
@@ -60,6 +62,14 @@ class EventStore(Protocol):
         subject: SubjectScope,
     ) -> tuple[EventEnvelope, ...]: ...
 
+    def redact(
+        self,
+        subject: SubjectScope,
+        event_ids: tuple[UUID, ...],
+        plan_id: UUID,
+    ) -> None: ...
+
+
 @runtime_checkable
 class EvidenceRepository(Protocol):
     def append(self, evidence: EvidenceRef) -> None: ...
@@ -75,12 +85,72 @@ class EvidenceRepository(Protocol):
         subject: SubjectScope,
     ) -> tuple[EvidenceRef, ...]: ...
 
+    def delete(
+        self,
+        subject: SubjectScope,
+        evidence_ids: tuple[UUID, ...],
+    ) -> None: ...
+
 
 @runtime_checkable
 class StateRepository(Protocol):
     def load(self, subject: SubjectScope | str) -> SubjectState | None: ...
 
     def save(self, state: SubjectState, expected_version: int) -> None: ...
+
+    def replace(self, state: SubjectState) -> None: ...
+
+    def delete(self, subject: SubjectScope) -> None: ...
+
+
+@runtime_checkable
+class MemoryRepository(Protocol):
+    def load(
+        self,
+        subject: SubjectScope,
+        memory_id: UUID,
+    ) -> MemoryRecord | None: ...
+
+    def save(self, record: MemoryRecord, expected_version: int) -> None: ...
+
+    def read_history(
+        self,
+        subject: SubjectScope,
+        memory_id: UUID,
+    ) -> tuple[MemoryRecord, ...]: ...
+
+    def read_by_subject(
+        self,
+        subject: SubjectScope,
+    ) -> tuple[MemoryRecord, ...]: ...
+
+    def record_access(self, record: MemoryAccessRecord) -> None: ...
+
+    def read_access_history(
+        self,
+        subject: SubjectScope,
+        memory_id: UUID,
+    ) -> tuple[MemoryAccessRecord, ...]: ...
+
+    def delete(
+        self,
+        subject: SubjectScope,
+        memory_ids: tuple[UUID, ...],
+    ) -> None: ...
+
+    def rebuild_index(self, subject: SubjectScope) -> None: ...
+
+
+@runtime_checkable
+class DeletionRepository(Protocol):
+    def save(self, plan: DeletionPlan) -> None: ...
+
+    def get(self, plan_id: UUID) -> DeletionPlan | None: ...
+
+    def read_by_status(
+        self,
+        status: DeletionStatus,
+    ) -> tuple[DeletionPlan, ...]: ...
 
 
 @runtime_checkable
@@ -143,3 +213,5 @@ class ProcessJournal(Protocol):
     def claimable_outbox(self, now: datetime) -> tuple[OutboxEntry, ...]: ...
 
     def dead_letters(self) -> tuple[ProcessingRecord, ...]: ...
+
+    def forget(self, event_ids: tuple[UUID, ...]) -> None: ...

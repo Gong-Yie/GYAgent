@@ -328,6 +328,18 @@ class FileProcessJournal:
                 ) from error
         return tuple(records)
 
+    def forget(self, event_ids: tuple[UUID, ...]) -> None:
+        for event_id in event_ids:
+            for path in (
+                self._record_path(event_id),
+                self._history_path(event_id),
+                self._pending_path(event_id),
+                self._ack_path(event_id),
+                self._dead_letter_path(event_id),
+                self._lock_path(event_id),
+            ):
+                path.unlink(missing_ok=True)
+
     def _write_record_unlocked(self, record: ProcessingRecord) -> None:
         atomic_write_text(
             self._record_path(record.event_id),

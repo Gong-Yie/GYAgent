@@ -36,6 +36,27 @@ class UserMessagePayload:
 
 
 @dataclass(frozen=True, slots=True)
+class CognitionCorrectionPayload:
+    target_field: str
+    cognition_type: str
+    value: object
+    corrected_memory_id: UUID | None = None
+
+    def __post_init__(self) -> None:
+        _require_non_blank(self.target_field, "target_field")
+        _require_non_blank(self.cognition_type, "cognition_type")
+        if self.value is None or (
+            isinstance(self.value, str) and not self.value.strip()
+        ):
+            raise ContractValidationError("correction value must not be empty")
+        if self.corrected_memory_id is not None and not isinstance(
+            self.corrected_memory_id,
+            UUID,
+        ):
+            raise ContractValidationError("corrected_memory_id must be a UUID")
+
+
+@dataclass(frozen=True, slots=True)
 class ModelResponsePayload:
     model: str
     response_id: str
@@ -77,6 +98,7 @@ class ProcessingFailurePayload:
 
 EventPayload = (
     UserMessagePayload
+    | CognitionCorrectionPayload
     | ModelResponsePayload
     | StateReductionPayload
     | ProcessingFailurePayload
@@ -110,6 +132,7 @@ class EventEnvelope:
             raise ContractValidationError("actor must be a SubjectRef or None")
         expected_payloads = {
             "user.message": UserMessagePayload,
+            "user.correction": CognitionCorrectionPayload,
             "model.response": ModelResponsePayload,
             "state.reduced": StateReductionPayload,
             "processing.failed": ProcessingFailurePayload,
@@ -131,12 +154,12 @@ class EventEnvelope:
             raise ContractValidationError(
                 f"schema_version must be {EVENT_SCHEMA_VERSION}"
             )
-        if self.event_type == "user.message":
+        if self.event_type in {"user.message", "user.correction"}:
             if self.source is not EventSource.USER:
-                raise ContractValidationError("user.message source must be user")
+                raise ContractValidationError("user event source must be user")
             if self.actor != self.subject.subject:
                 raise ContractValidationError(
-                    "user.message actor must match its subject"
+                    "user event actor must match its subject"
                 )
         else:
             expected_source = (
@@ -212,6 +235,50 @@ class EventEnvelope:
             source=EventSource.SYSTEM,
             scope=cause.scope,
             causation_id=cause.event_id,
+            correlation_id=correlation_id,
+            run_id=run_id,
+        )
+
+    @classmethod
+    def correction(
+        cls,
+        actor: SubjectScope | str,
+        *,
+        target_field: str,
+        cognition_type: str,
+        value: object,
+        corrected_memory_id: UUID | None = None,
+        event_id: UUID | None = None,
+        clock: Clock = SYSTEM_CLOCK,
+        disclosure: DisclosureScope = DisclosureScope.PRIVATE,
+        conversation: ConversationScope | None = None,
+        correlation_id: UUID | None = None,
+        causation_id: UUID | None = None,
+        run_id: UUID | None = None,
+    ) -> "EventEnvelope":
+        actor_scope = normalize_subject_scope(actor)
+        occurred_at = clock.now()
+        recorded_at = clock.now()
+        return cls(
+            event_id=event_id or new_event_id(),
+            event_type="user.correction",
+            actor=actor_scope.subject,
+            subject=actor_scope,
+            payload=CognitionCorrectionPayload(
+                target_field=target_field,
+                cognition_type=cognition_type,
+                value=value,
+                corrected_memory_id=corrected_memory_id,
+            ),
+            occurred_at=occurred_at,
+            recorded_at=recorded_at,
+            source=EventSource.USER,
+            scope=DataScope(
+                owner=actor_scope,
+                disclosure=disclosure,
+                conversation=conversation,
+            ),
+            causation_id=causation_id,
             correlation_id=correlation_id,
             run_id=run_id,
         )
