@@ -34,6 +34,10 @@ class UnsupportedSchemaVersionError(SerializationError):
     """Raised when serialized data uses an unsupported schema version."""
 
 
+class FileLockUnavailableError(CognitionError):
+    """Raised when an exclusive file lock is already held."""
+
+
 class ModelOutputError(CognitionError):
     """Raised when a model response violates the cognition output contract."""
 

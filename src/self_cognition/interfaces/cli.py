@@ -22,9 +22,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("message", help="用户消息文本")
     parser.add_argument(
         "--data-dir",
-        default="data",
+        default=None,
         type=Path,
-        help="事件日志和状态快照目录（默认：data）",
+        help="事件日志和状态快照目录（覆盖 .env 配置）",
     )
     return parser
 
@@ -39,19 +39,20 @@ def main(
     args = build_parser().parse_args(argv)
     try:
         dependencies = container or build_container(args.data_dir)
-        context = RunContext(
-            run_id=new_run_id(),
-            correlation_id=new_correlation_id(),
-            deadline=SYSTEM_CLOCK.now() + timedelta(seconds=30),
-        )
-        event = EventEnvelope.user_message(
-            SubjectScope.legacy_user(args.subject_id),
-            args.message,
-            run_id=context.run_id,
-            correlation_id=context.correlation_id,
-        )
-        result = dependencies.process_event.process(event, context)
-        output = _result_output(dependencies, args.message, result)
+        with dependencies.lifecycle:
+            context = RunContext(
+                run_id=new_run_id(),
+                correlation_id=new_correlation_id(),
+                deadline=SYSTEM_CLOCK.now() + timedelta(seconds=30),
+            )
+            event = EventEnvelope.user_message(
+                SubjectScope.legacy_user(args.subject_id),
+                args.message,
+                run_id=context.run_id,
+                correlation_id=context.correlation_id,
+            )
+            result = dependencies.process_event.process(event, context)
+            output = _result_output(dependencies, args.message, result)
         print(json.dumps(output, ensure_ascii=False, sort_keys=True))
         return 0 if result.status is ProcessEventStatus.SUCCEEDED else 1
     except Exception as error:

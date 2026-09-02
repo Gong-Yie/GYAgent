@@ -2,6 +2,7 @@ import inspect
 from dataclasses import replace
 
 from self_cognition.blackboard.service import CognitiveSpaceService
+from self_cognition.cognition.registry import CognitiveModuleRegistry
 from self_cognition.core.contributions import CognitiveContribution
 from self_cognition.core.errors import RunCancelledError
 from self_cognition.core.events import EventEnvelope
@@ -15,9 +16,11 @@ class CognitionEngine:
         self,
         modules: tuple[CognitiveModule, ...],
         cognitive_space: CognitiveSpaceService,
+        module_registry: CognitiveModuleRegistry | None = None,
     ) -> None:
         self._modules = modules
         self._cognitive_space = cognitive_space
+        self._module_registry = module_registry
 
     def process(
         self,
@@ -27,7 +30,12 @@ class CognitionEngine:
     ) -> SubjectState:
         contributions: list[CognitiveContribution] = []
         module_errors: list[Exception] = []
-        for module in self._modules:
+        modules = (
+            self._module_registry.active_modules()
+            if self._module_registry is not None
+            else self._modules
+        )
+        for module in modules:
             if context is not None and context.is_cancelled:
                 raise RunCancelledError("run cancelled before cognitive module")
             if event.event_type not in module.subscriptions:
@@ -42,9 +50,13 @@ class CognitionEngine:
                     contributions.extend(module.process(event, context))
                 else:
                     contributions.extend(module.process(event))
+                if self._module_registry is not None:
+                    self._module_registry.mark_healthy(module)
             except RunCancelledError:
                 raise
             except Exception as error:
+                if self._module_registry is not None:
+                    self._module_registry.mark_degraded(module, error)
                 module_errors.append(error)
                 continue
 

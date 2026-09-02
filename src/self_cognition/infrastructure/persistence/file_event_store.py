@@ -1,4 +1,5 @@
 import os
+from threading import RLock
 from pathlib import Path
 from uuid import UUID
 
@@ -16,20 +17,22 @@ class FileEventStore:
         self._path = Path(path)
         self._events = list(self._read_events())
         self._event_ids = {event.event_id for event in self._events}
+        self._lock = RLock()
 
     def append(self, event: EventEnvelope) -> None:
-        if event.event_id in self._event_ids:
-            return
+        with self._lock:
+            if event.event_id in self._event_ids:
+                return
 
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        record = event_to_json(event) + "\n"
-        with self._path.open("a", encoding="utf-8", newline="\n") as handle:
-            handle.write(record)
-            handle.flush()
-            os.fsync(handle.fileno())
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            record = event_to_json(event) + "\n"
+            with self._path.open("a", encoding="utf-8", newline="\n") as handle:
+                handle.write(record)
+                handle.flush()
+                os.fsync(handle.fileno())
 
-        self._events.append(event)
-        self._event_ids.add(event.event_id)
+            self._events.append(event)
+            self._event_ids.add(event.event_id)
 
     def read_by_subject(
         self,
@@ -37,7 +40,10 @@ class FileEventStore:
     ) -> tuple[EventEnvelope, ...]:
         if not isinstance(subject, SubjectScope):
             raise TypeError("subject must be a SubjectScope")
-        return tuple(event for event in self._events if event.subject == subject)
+        with self._lock:
+            return tuple(
+                event for event in self._events if event.subject == subject
+            )
 
     def _read_events(self) -> tuple[EventEnvelope, ...]:
         if not self._path.exists():

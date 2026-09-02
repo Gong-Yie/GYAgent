@@ -22,3 +22,4 @@ class ProcessEventResult:
     state: SubjectState | None
     event_saved: bool
     error_type: str | None = None
+    retryable: bool | None = None
