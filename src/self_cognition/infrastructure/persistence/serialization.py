@@ -15,6 +15,7 @@ from self_cognition.core.errors import (
 )
 from self_cognition.core.evidence import EvidenceRef, EvidenceSourceKind
 from self_cognition.core.events import (
+    CapabilityObservationPayload,
     CognitionModuleResultPayload,
     CognitionCorrectionPayload,
     EVENT_SCHEMA_VERSION,
@@ -22,8 +23,15 @@ from self_cognition.core.events import (
     EventSource,
     ModelResponsePayload,
     ProcessingFailurePayload,
+    SelfModelObservationPayload,
     StateReductionPayload,
     UserMessagePayload,
+)
+from self_cognition.core.identity import (
+    CapabilityRecord,
+    GoalRecord,
+    LimitationRecord,
+    SelfModelAspect,
 )
 from self_cognition.core.memories import (
     MemoryAccessRecord,
@@ -465,6 +473,8 @@ def _event_payload_to_dict(
     payload: (
         UserMessagePayload
         | CognitionCorrectionPayload
+        | SelfModelObservationPayload
+        | CapabilityObservationPayload
         | ModelResponsePayload
         | CognitionModuleResultPayload
         | StateReductionPayload
@@ -482,6 +492,24 @@ def _event_payload_to_dict(
                 payload.corrected_memory_id
             ),
         }
+    if isinstance(payload, SelfModelObservationPayload):
+        value = payload.value
+        if isinstance(value, (LimitationRecord, GoalRecord)):
+            value = value.to_state_value()
+        return {
+            "aspect": payload.aspect.value,
+            "field_id": payload.field_id,
+            "value": value,
+            "confidence": payload.confidence,
+            "explicitly_confirmed": payload.explicitly_confirmed,
+            "expires_at": (
+                payload.expires_at.isoformat()
+                if payload.expires_at is not None
+                else None
+            ),
+        }
+    if isinstance(payload, CapabilityObservationPayload):
+        return {"capability": payload.capability.to_state_value()}
     if isinstance(payload, ModelResponsePayload):
         return {
             "model": payload.model,
@@ -524,6 +552,8 @@ def _event_payload_from_dict(
 ) -> (
     UserMessagePayload
     | CognitionCorrectionPayload
+    | SelfModelObservationPayload
+    | CapabilityObservationPayload
     | ModelResponsePayload
     | CognitionModuleResultPayload
     | StateReductionPayload
@@ -560,6 +590,50 @@ def _event_payload_from_dict(
                 values["corrected_memory_id"],
                 f"{path}.corrected_memory_id",
             ),
+        )
+    if event_type == "self_model.observation":
+        _require_keys(
+            values,
+            {
+                "aspect",
+                "field_id",
+                "value",
+                "confidence",
+                "explicitly_confirmed",
+                "expires_at",
+            },
+            path,
+        )
+        try:
+            aspect = SelfModelAspect(
+                _require_string(values["aspect"], f"{path}.aspect")
+            )
+        except ValueError as error:
+            raise MalformedSerializedDataError(f"invalid {path}.aspect") from error
+        field_id = _require_non_blank_string(values["field_id"], f"{path}.field_id")
+        raw_value = values["value"]
+        if aspect is SelfModelAspect.LIMITATION:
+            raw_value = LimitationRecord.from_state_value(raw_value)
+        elif aspect is SelfModelAspect.GOAL:
+            raw_value = GoalRecord.from_state_value(raw_value)
+        return SelfModelObservationPayload(
+            aspect=aspect,
+            field_id=field_id,
+            value=raw_value,
+            confidence=_require_float(values["confidence"], f"{path}.confidence"),
+            explicitly_confirmed=_require_bool(
+                values["explicitly_confirmed"],
+                f"{path}.explicitly_confirmed",
+            ),
+            expires_at=_require_optional_datetime(
+                values["expires_at"],
+                f"{path}.expires_at",
+            ),
+        )
+    if event_type == "capability.observed":
+        _require_keys(values, {"capability"}, path)
+        return CapabilityObservationPayload(
+            CapabilityRecord.from_state_value(values["capability"])
         )
     if event_type == "model.response":
         _require_keys(values, {"model", "response_id", "raw_output"}, path)

@@ -6,6 +6,7 @@ from uuid import UUID
 from self_cognition.core.errors import ContractValidationError
 from self_cognition.core.events import (
     EventEnvelope,
+    EventSource,
     ModelResponsePayload,
     UserMessagePayload,
 )
@@ -71,6 +72,15 @@ class EvidenceRef:
                 source_ref=event.payload.response_id,
                 scope=event.scope,
                 locator="payload.raw_output",
+                observed_at=event.occurred_at,
+                reliability=1.0,
+            )
+        if event.source is EventSource.TOOL:
+            return cls(
+                evidence_id=event.event_id,
+                source_kind=EvidenceSourceKind.TOOL_RESULT,
+                source_ref=str(event.event_id),
+                scope=event.scope,
                 observed_at=event.occurred_at,
                 reliability=1.0,
             )

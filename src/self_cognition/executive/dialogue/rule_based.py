@@ -1,6 +1,14 @@
 from dataclasses import dataclass
 from self_cognition.core.evidence import EvidenceRef
-from self_cognition.core.workspace import Workspace
+from self_cognition.core.identity import (
+    CapabilityExecutionStatus,
+    CapabilityRecord,
+    GoalRecord,
+    GoalStatus,
+    LimitationRecord,
+    LimitationStatus,
+)
+from self_cognition.core.workspace import Workspace, WorkspaceItem
 
 
 STUDY_TIME_QUESTION = "我喜欢什么时候学习？"
@@ -25,6 +33,10 @@ AFFECT_QUESTIONS = {
 }
 NARRATIVE_QUESTION = "我的项目经历如何发展？"
 NARRATIVE_FIELD_PREFIX = "narrative.chapter."
+SELF_IDENTITY_QUESTION = "你是谁？"
+SELF_CAPABILITY_QUESTION = "你能做什么？"
+SELF_LIMITATION_QUESTION = "你不能做什么？"
+SELF_GOAL_QUESTION = "你当前的目标是什么？"
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +125,118 @@ class RuleBasedDialogueModel:
                 unknown_text="我还不知道你最重视什么。",
             )
 
+        if question == SELF_IDENTITY_QUESTION:
+            identity = tuple(
+                item
+                for item in workspace.items
+                if item.target_field.startswith(("identity.", "values."))
+            )
+            if not identity:
+                return DialogueResponse("我还没有足够证据说明自己是谁。", ())
+            return DialogueResponse(
+                "我的自我认知包括："
+                + "；".join(str(item.content) for item in identity)
+                + "。",
+                _evidence_from(identity),
+            )
+
+        if question == SELF_CAPABILITY_QUESTION:
+            capability_items = tuple(
+                item
+                for item in workspace.items
+                if item.target_field.startswith("capabilities.")
+            )
+            capabilities = tuple(
+                (item, CapabilityRecord.from_state_value(item.content))
+                for item in capability_items
+            )
+            available = tuple(
+                (item, capability)
+                for item, capability in capabilities
+                if capability.available
+            )
+            if not available:
+                return DialogueResponse("我当前没有已登记且获准的能力。", ())
+            descriptions = tuple(
+                capability.name
+                + (
+                    "（已有成功执行证据）"
+                    if capability.verified
+                    else "（尚无成功执行证据）"
+                )
+                for _, capability in available
+            )
+            return DialogueResponse(
+                "我当前可用的能力包括：" + "；".join(descriptions) + "。",
+                _evidence_from(tuple(item for item, _ in available)),
+            )
+
+        if question == SELF_LIMITATION_QUESTION:
+            limitation_items = tuple(
+                item
+                for item in workspace.items
+                if item.target_field.startswith("limitations.")
+            )
+            limitations = tuple(
+                (item, LimitationRecord.from_state_value(item.content))
+                for item in limitation_items
+            )
+            active = tuple(
+                (item, limitation)
+                for item, limitation in limitations
+                if limitation.status is LimitationStatus.ACTIVE
+            )
+            capability_items = tuple(
+                item
+                for item in workspace.items
+                if item.target_field.startswith("capabilities.")
+            )
+            unavailable = tuple(
+                (item, capability)
+                for item in capability_items
+                for capability in (CapabilityRecord.from_state_value(item.content),)
+                if not capability.available
+                or capability.execution_status is CapabilityExecutionStatus.FAILED
+            )
+            if not active and not unavailable:
+                return DialogueResponse("我目前没有已记录的能力限制。", ())
+            descriptions = tuple(
+                f"{limitation.description}（{limitation.reason}）"
+                for _, limitation in active
+            ) + tuple(
+                f"{capability.name}（{capability.reason}）"
+                for _, capability in unavailable
+            )
+            evidence_items = tuple(item for item, _ in active + unavailable)
+            return DialogueResponse(
+                "我当前的限制包括：" + "；".join(descriptions) + "。",
+                _evidence_from(evidence_items),
+            )
+
+        if question == SELF_GOAL_QUESTION:
+            goal_items = tuple(
+                item
+                for item in workspace.items
+                if item.target_field.startswith("goals.")
+            )
+            goals = tuple(
+                (item, GoalRecord.from_state_value(item.content))
+                for item in goal_items
+            )
+            active = tuple(
+                (item, goal)
+                for item, goal in goals
+                if goal.status is GoalStatus.ACTIVE
+            )
+            if not active:
+                return DialogueResponse("我当前没有有证据支持的活动目标。", ())
+            return DialogueResponse(
+                "我当前的目标是："
+                + "；".join(goal.description for _, goal in active)
+                + "。",
+                _evidence_from(tuple(item for item, _ in active)),
+            )
+
         affect_field = AFFECT_QUESTIONS.get(question)
         if affect_field is not None:
             for item in workspace.items:
@@ -185,3 +309,15 @@ class RuleBasedDialogueModel:
                     evidence_refs=item.evidence_refs,
                 )
         return DialogueResponse(text=unknown_text, evidence_refs=())
+
+
+def _evidence_from(items: tuple[WorkspaceItem, ...]) -> tuple[EvidenceRef, ...]:
+    seen = set()
+    evidence: list[EvidenceRef] = []
+    for item in items:
+        for ref in item.evidence_refs:
+            if ref.evidence_id in seen:
+                continue
+            seen.add(ref.evidence_id)
+            evidence.append(ref)
+    return tuple(evidence)

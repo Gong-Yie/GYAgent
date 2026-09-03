@@ -17,6 +17,9 @@ from self_cognition.cognition.episodic.memory_extractor import (
 from self_cognition.cognition.identity.identity_value_extractor import (
     IdentityValueExtractor,
 )
+from self_cognition.cognition.identity.self_model import (
+    SelfModelCognitionModule,
+)
 from self_cognition.cognition.metacognition.conflict_extractor import (
     ConflictMetacognitionExtractor,
 )
@@ -80,6 +83,7 @@ from self_cognition.settings import (
     load_settings,
 )
 from self_cognition.core.time import SYSTEM_CLOCK
+from self_cognition.tools.registry import CapabilityRegistry
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +107,7 @@ class ApplicationContainer:
     workspace_builder: WorkspaceBuilder
     dialogue_model: RuleBasedDialogueModel
     module_registry: CognitiveModuleRegistry
+    capability_registry: CapabilityRegistry
     lifecycle: ApplicationLifecycle
 
 
@@ -179,6 +184,7 @@ def build_container(
     )
     forget.recover(now=SYSTEM_CLOCK.now())
     selected_dialogue_model = dialogue_model or RuleBasedDialogueModel()
+    capability_registry = CapabilityRegistry()
     lifecycle = ApplicationLifecycle(
         event_bus,
         worker_enabled=resolved_settings.worker_enabled,
@@ -213,6 +219,7 @@ def build_container(
         workspace_builder=workspace_builder,
         dialogue_model=selected_dialogue_model,
         module_registry=module_registry,
+        capability_registry=capability_registry,
         lifecycle=lifecycle,
     )
 
@@ -260,6 +267,12 @@ def _default_module_registrations() -> tuple[ModuleRegistration, ...]:
             "identity",
             "1",
             IdentityValueExtractor(),
+        ),
+        ModuleRegistration(
+            "identity.self_model",
+            "identity",
+            "1",
+            SelfModelCognitionModule(),
         ),
         ModuleRegistration(
             "affect.affect_extractor",

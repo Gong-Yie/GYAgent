@@ -2,6 +2,7 @@ from datetime import datetime
 from uuid import UUID
 
 from self_cognition.core.contributions import CognitiveContribution
+from self_cognition.core.evidence import EvidenceSourceKind
 from self_cognition.core.errors import ScopeMismatchError, SubjectMismatchError
 from self_cognition.core.state import (
     ConflictRecord,
@@ -10,6 +11,7 @@ from self_cognition.core.state import (
     StateDecisionStatus,
     SubjectState,
 )
+from self_cognition.core.scopes import SubjectKind
 
 
 CONFLICT_REASON = "different values for the same field in one batch"
@@ -142,10 +144,20 @@ class StateReducer:
             return StateDecisionStatus.REJECTED, LOW_CONFIDENCE_REASON
 
         existing = state.entries.get(contribution.target_field)
+        authorized = contribution.explicitly_confirmed or any(
+            evidence.source_kind is EvidenceSourceKind.SYSTEM_PRIOR
+            for evidence in contribution.evidence_refs
+        )
+        if (
+            state.subject_kind is SubjectKind.MIND
+            and existing is None
+            and not authorized
+        ):
+            return StateDecisionStatus.PENDING, CONFIRMATION_REQUIRED_REASON
         if (
             existing is not None
             and contribution.value != existing.value
-            and not contribution.explicitly_confirmed
+            and not authorized
         ):
             return StateDecisionStatus.PENDING, CONFIRMATION_REQUIRED_REASON
         return None

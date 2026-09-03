@@ -99,12 +99,12 @@ def test_dotenv_rejects_unsupported_schema_version(tmp_path: Path) -> None:
         load_settings(dotenv, environ={})
 
 
-def test_default_registry_has_eight_modules_in_seven_categories(tmp_path: Path) -> None:
+def test_default_registry_has_ten_modules_in_seven_categories(tmp_path: Path) -> None:
     container = build_container(tmp_path, dotenv_path=tmp_path / "missing.env")
 
     statuses = container.module_registry.statuses()
 
-    assert len(statuses) == 8
+    assert len(statuses) == 10
     assert len({status.category for status in statuses}) == 7
     assert all(status.health is ModuleHealth.HEALTHY for status in statuses)
 

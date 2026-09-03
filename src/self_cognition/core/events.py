@@ -6,12 +6,20 @@ from enum import Enum
 from uuid import UUID
 
 from self_cognition.core.errors import ContractValidationError
+from self_cognition.core.identity import (
+    CapabilityRecord,
+    GoalRecord,
+    LimitationRecord,
+    SelfModelAspect,
+    SelfModelObservationValue,
+)
 from self_cognition.core.ids import new_event_id
 from self_cognition.core.scopes import (
     ConversationScope,
     DataScope,
     DisclosureScope,
     SubjectRef,
+    SubjectKind,
     SubjectScope,
     normalize_subject_scope,
 )
@@ -56,6 +64,59 @@ class CognitionCorrectionPayload:
             UUID,
         ):
             raise ContractValidationError("corrected_memory_id must be a UUID")
+
+
+@dataclass(frozen=True, slots=True)
+class SelfModelObservationPayload:
+    aspect: SelfModelAspect
+    field_id: str
+    value: SelfModelObservationValue
+    confidence: float
+    explicitly_confirmed: bool = False
+    expires_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.aspect, SelfModelAspect):
+            raise ContractValidationError("self model aspect is invalid")
+        _require_identifier(self.field_id, "self model field_id")
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ContractValidationError(
+                "self model confidence must be between zero and one"
+            )
+        if not isinstance(self.explicitly_confirmed, bool):
+            raise ContractValidationError(
+                "explicitly_confirmed must be a boolean"
+            )
+        if self.aspect in {SelfModelAspect.IDENTITY, SelfModelAspect.VALUE}:
+            _require_non_blank(self.value, "self model value")
+        elif self.aspect is SelfModelAspect.LIMITATION:
+            if not isinstance(self.value, LimitationRecord):
+                raise ContractValidationError(
+                    "limitation observation requires a LimitationRecord"
+                )
+            if self.field_id != self.value.limitation_id:
+                raise ContractValidationError(
+                    "limitation field_id must match limitation_id"
+                )
+        elif not isinstance(self.value, GoalRecord):
+            raise ContractValidationError(
+                "goal observation requires a GoalRecord"
+            )
+        elif self.field_id != self.value.goal_id:
+            raise ContractValidationError("goal field_id must match goal_id")
+        if self.expires_at is not None:
+            _require_aware(self.expires_at, "self model expires_at")
+
+
+@dataclass(frozen=True, slots=True)
+class CapabilityObservationPayload:
+    capability: CapabilityRecord
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.capability, CapabilityRecord):
+            raise ContractValidationError(
+                "capability observation requires a CapabilityRecord"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +220,8 @@ class ProcessingFailurePayload:
 EventPayload = (
     UserMessagePayload
     | CognitionCorrectionPayload
+    | SelfModelObservationPayload
+    | CapabilityObservationPayload
     | ModelResponsePayload
     | CognitionModuleResultPayload
     | StateReductionPayload
@@ -194,6 +257,8 @@ class EventEnvelope:
         expected_payloads = {
             "user.message": UserMessagePayload,
             "user.correction": CognitionCorrectionPayload,
+            "self_model.observation": SelfModelObservationPayload,
+            "capability.observed": CapabilityObservationPayload,
             "model.response": ModelResponsePayload,
             "cognition.module_result": CognitionModuleResultPayload,
             "state.reduced": StateReductionPayload,
@@ -223,6 +288,21 @@ class EventEnvelope:
                 raise ContractValidationError(
                     "user event actor must match its subject"
                 )
+        elif self.event_type == "self_model.observation":
+            self._validate_self_model_source()
+        elif self.event_type == "capability.observed":
+            if self.subject.subject.kind is not SubjectKind.MIND:
+                raise ContractValidationError(
+                    "capability observation must target a mind subject"
+                )
+            if self.source not in {EventSource.SYSTEM, EventSource.TOOL}:
+                raise ContractValidationError(
+                    "capability observation source must be system or tool"
+                )
+            if self.actor is not None:
+                raise ContractValidationError(
+                    "capability observation must not have a domain actor"
+                )
         else:
             expected_source = (
                 EventSource.MODEL
@@ -237,6 +317,26 @@ class EventEnvelope:
                 raise ContractValidationError(
                     "model and system events must not have a domain actor"
                 )
+
+    def _validate_self_model_source(self) -> None:
+        if self.subject.subject.kind is not SubjectKind.MIND:
+            raise ContractValidationError(
+                "self model observation must target a mind subject"
+            )
+        if self.source is EventSource.SYSTEM:
+            if self.actor is not None:
+                raise ContractValidationError(
+                    "system self model observation must not have an actor"
+                )
+            return
+        if self.source is not EventSource.USER:
+            raise ContractValidationError(
+                "self model observation source must be user or system"
+            )
+        if self.actor is None or self.actor.kind is not SubjectKind.USER:
+            raise ContractValidationError(
+                "user self model observation requires a user actor"
+            )
 
     @classmethod
     def user_message(
@@ -269,6 +369,85 @@ class EventEnvelope:
                 disclosure=disclosure,
                 conversation=conversation,
             ),
+            causation_id=causation_id,
+            correlation_id=correlation_id,
+            run_id=run_id,
+        )
+
+    @classmethod
+    def self_model_observation(
+        cls,
+        subject: SubjectScope,
+        payload: SelfModelObservationPayload,
+        *,
+        actor: SubjectScope | None = None,
+        event_id: UUID | None = None,
+        clock: Clock = SYSTEM_CLOCK,
+        correlation_id: UUID | None = None,
+        causation_id: UUID | None = None,
+        run_id: UUID | None = None,
+    ) -> "EventEnvelope":
+        if subject.subject.kind is not SubjectKind.MIND:
+            raise ContractValidationError(
+                "self model observation must target a mind subject"
+            )
+        if actor is not None:
+            if actor.mind != subject.mind:
+                raise ContractValidationError(
+                    "self model actor must belong to the target mind"
+                )
+            if actor.subject.kind is not SubjectKind.USER:
+                raise ContractValidationError(
+                    "self model actor must be a user subject"
+                )
+        now = clock.now()
+        return cls(
+            event_id=event_id or new_event_id(),
+            event_type="self_model.observation",
+            actor=actor.subject if actor is not None else None,
+            subject=subject,
+            payload=payload,
+            occurred_at=now,
+            recorded_at=now,
+            source=EventSource.USER if actor is not None else EventSource.SYSTEM,
+            scope=DataScope(subject, DisclosureScope.MIND),
+            causation_id=causation_id,
+            correlation_id=correlation_id,
+            run_id=run_id,
+        )
+
+    @classmethod
+    def capability_observed(
+        cls,
+        subject: SubjectScope,
+        capability: CapabilityRecord,
+        *,
+        source: EventSource,
+        event_id: UUID | None = None,
+        clock: Clock = SYSTEM_CLOCK,
+        correlation_id: UUID | None = None,
+        causation_id: UUID | None = None,
+        run_id: UUID | None = None,
+    ) -> "EventEnvelope":
+        if source not in {EventSource.SYSTEM, EventSource.TOOL}:
+            raise ContractValidationError(
+                "capability observation source must be system or tool"
+            )
+        if subject.subject.kind is not SubjectKind.MIND:
+            raise ContractValidationError(
+                "capability observation must target a mind subject"
+            )
+        now = clock.now()
+        return cls(
+            event_id=event_id or new_event_id(),
+            event_type="capability.observed",
+            actor=None,
+            subject=subject,
+            payload=CapabilityObservationPayload(capability),
+            occurred_at=now,
+            recorded_at=now,
+            source=source,
+            scope=DataScope(subject, DisclosureScope.MIND),
             causation_id=causation_id,
             correlation_id=correlation_id,
             run_id=run_id,
@@ -444,3 +623,9 @@ def _require_aware(value: datetime, name: str) -> None:
 def _require_non_blank(value: str, name: str) -> None:
     if not isinstance(value, str) or not value.strip():
         raise ContractValidationError(f"{name} must not be blank")
+
+
+def _require_identifier(value: str, name: str) -> None:
+    _require_non_blank(value, name)
+    if any(character.isspace() for character in value):
+        raise ContractValidationError(f"{name} must not contain whitespace")

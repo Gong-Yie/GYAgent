@@ -64,6 +64,13 @@ class SubjectScope:
             subject=SubjectRef(SubjectKind.USER, subject_id),
         )
 
+    @classmethod
+    def for_mind(cls, mind_id: str) -> "SubjectScope":
+        return cls(
+            mind=MindScope(mind_id),
+            subject=SubjectRef(SubjectKind.MIND, mind_id),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class ConversationScope:
