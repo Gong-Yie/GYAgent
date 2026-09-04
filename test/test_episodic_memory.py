@@ -38,7 +38,15 @@ def test_records_one_concrete_experience_with_event_evidence():
     assert contribution.target_field.startswith("episodic.experience.")
     assert contribution.cognition_type is CognitionType.FACT
     assert contribution.target_field.endswith(str(event.event_id))
-    assert contribution.value == "今天我去了公园"
+    assert contribution.value == {
+        "text": "今天我去了公园",
+        "people": ("我",),
+        "time": "今天",
+        "environment": "公园",
+        "action": "去了",
+        "result": "",
+        "salience": 0.5,
+    }
     assert contribution.confidence == 1.0
     assert contribution.evidence_refs[0].evidence_id == event.event_id
 

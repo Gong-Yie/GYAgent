@@ -11,7 +11,7 @@ from self_cognition.core.affect import decay_assessment
 from self_cognition.core.errors import ContractValidationError
 from self_cognition.core.evidence import EvidenceRef
 from self_cognition.core.indexes import WorkspaceIndex
-from self_cognition.core.memories import MemoryCues
+from self_cognition.core.memories import MemoryCues, MemoryType
 from self_cognition.core.scopes import SubjectScope
 from self_cognition.core.state import SubjectState
 from self_cognition.core.time import Clock, SYSTEM_CLOCK
@@ -109,6 +109,7 @@ class RetrievalQuery:
     purpose: str = "dialogue"
     field_patterns: tuple[str, ...] = ()
     memory_cues: MemoryCues = MemoryCues()
+    memory_types: frozenset[MemoryType] = frozenset()
     budget: RetrievalBudget = RetrievalBudget()
     fixed_context: WorkspaceFixedContext = WorkspaceFixedContext()
     time_from: datetime | None = None
@@ -123,6 +124,10 @@ class RetrievalQuery:
                 raise ContractValidationError(f"query {name} must not be blank")
         if any(not value.strip() for value in self.field_patterns):
             raise ContractValidationError("field patterns must not be blank")
+        if any(not isinstance(value, MemoryType) for value in self.memory_types):
+            raise ContractValidationError(
+                "memory_types must contain MemoryType values"
+            )
         for name in ("time_from", "time_to"):
             value = getattr(self, name)
             if value is not None and (
@@ -146,6 +151,7 @@ class RetrievalQuery:
         *,
         budget: RetrievalBudget = RetrievalBudget(),
         fixed_context: WorkspaceFixedContext | None = None,
+        memory_types: frozenset[MemoryType] = frozenset(),
     ) -> RetrievalQuery:
         patterns = QUESTION_FIELDS.get(question, ())
         topics = tuple(pattern.rstrip(".*") for pattern in patterns)
@@ -154,6 +160,7 @@ class RetrievalQuery:
             task=question,
             field_patterns=patterns,
             memory_cues=MemoryCues(topics=topics),
+            memory_types=memory_types,
             budget=budget,
             fixed_context=(
                 fixed_context
@@ -444,6 +451,9 @@ def _retrieve_state(
         else:
             fields = (pattern,)
         for field_name in fields:
+            memory_type = _field_memory_type(field_name)
+            if query.memory_types and memory_type not in query.memory_types:
+                continue
             entry = state.entries.get(field_name)
             if entry is None:
                 continue
@@ -492,3 +502,19 @@ def _narrative_order(item: WorkspaceItem) -> tuple[object, ...]:
         str(content.get("occurred_at", "")) if isinstance(content, dict) else "",
         item.target_field,
     )
+
+
+def _field_memory_type(field_name: str) -> MemoryType | None:
+    if field_name.startswith("episodic."):
+        return MemoryType.EPISODIC
+    if field_name.startswith("procedural."):
+        return MemoryType.PROCEDURAL
+    if field_name.startswith(
+        ("profile.", "preferences.", "identity.", "values.", "semantic.")
+    ):
+        return MemoryType.SEMANTIC
+    if field_name.startswith("relationships."):
+        return MemoryType.RELATIONSHIP
+    if field_name.startswith("narrative."):
+        return MemoryType.NARRATIVE
+    return None

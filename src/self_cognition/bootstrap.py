@@ -14,6 +14,9 @@ from self_cognition.cognition.registry import (
 from self_cognition.cognition.episodic.memory_extractor import (
     EpisodicMemoryExtractor,
 )
+from self_cognition.cognition.procedural.execution_extractor import (
+    ProceduralExecutionExtractor,
+)
 from self_cognition.cognition.identity.identity_value_extractor import (
     IdentityValueExtractor,
 )
@@ -38,6 +41,9 @@ from self_cognition.core.protocols import (
     StateRepository,
 )
 from self_cognition.core.workspace import WorkspaceBuilder
+from self_cognition.cognition.semantic.concept_pattern_extractor import (
+    ConceptPatternExtractor,
+)
 from self_cognition.cognition.semantic.name_extractor import NameExtractor
 from self_cognition.cognition.semantic.preference_extractor import (
     PreferenceExtractor,
@@ -239,10 +245,22 @@ def _default_module_registrations() -> tuple[ModuleRegistration, ...]:
             NameExtractor(),
         ),
         ModuleRegistration(
+            "semantic.concept_pattern_extractor",
+            "semantic",
+            "1",
+            ConceptPatternExtractor(),
+        ),
+        ModuleRegistration(
             "episodic.memory_extractor",
             "episodic",
             "1",
             EpisodicMemoryExtractor(),
+        ),
+        ModuleRegistration(
+            "procedural.execution_extractor",
+            "episodic",
+            "1",
+            ProceduralExecutionExtractor(),
         ),
         ModuleRegistration(
             "relationship.relationship_extractor",

@@ -87,7 +87,13 @@ class RuleBasedDialogueModel:
                     evidence_refs=(),
                 )
             return DialogueResponse(
-                text="我记得：" + "；".join(str(item.content) for item in items),
+                text="我记得："
+                + "；".join(
+                    str(item.content.get("text", item.content))
+                    if isinstance(item.content, dict)
+                    else str(item.content)
+                    for item in items
+                ),
                 evidence_refs=tuple(
                     evidence_ref
                     for item in items

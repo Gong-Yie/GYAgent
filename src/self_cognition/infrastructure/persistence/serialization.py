@@ -249,6 +249,12 @@ def memory_from_dict(data: object) -> MemoryRecord:
         expected_keys.update(
             {"expires_at", "lifecycle_changed_at", "lifecycle_reason"}
         )
+    else:
+        expected_keys.update(
+            key
+            for key in ("expires_at", "lifecycle_changed_at", "lifecycle_reason")
+            if key in values
+        )
     _require_keys(
         values,
         expected_keys,

@@ -18,6 +18,7 @@ INITIAL_RETRIEVABILITY = 1.0
 
 MEMORY_TYPE_PREFIXES = (
     ("episodic.", MemoryType.EPISODIC),
+    ("procedural.", MemoryType.PROCEDURAL),
     ("relationships.", MemoryType.RELATIONSHIP),
     ("narrative.", MemoryType.NARRATIVE),
     ("profile.", MemoryType.SEMANTIC),
