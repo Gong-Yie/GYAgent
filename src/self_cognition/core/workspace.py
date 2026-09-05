@@ -10,10 +10,11 @@ from uuid import UUID
 from self_cognition.core.affect import decay_assessment
 from self_cognition.core.errors import ContractValidationError
 from self_cognition.core.evidence import EvidenceRef
-from self_cognition.core.indexes import WorkspaceIndex
+from self_cognition.core.indexes import WorkspaceIndex, text_terms
 from self_cognition.core.memories import MemoryCues, MemoryType
 from self_cognition.core.scopes import SubjectScope
-from self_cognition.core.state import SubjectState
+from self_cognition.core.state import StateAtom, SubjectState
+from self_cognition.core.metacognition import ConflictStatus
 from self_cognition.core.time import Clock, SYSTEM_CLOCK
 
 
@@ -431,7 +432,14 @@ def _retrieve_state(
 ) -> RetrievalResult:
     active_index = index if index is not None and index.is_compatible(state) else None
     candidates: list[RetrievalCandidate] = []
-    for pattern in query.field_patterns:
+    patterns = query.field_patterns
+    if not patterns:
+        patterns = tuple(
+            name
+            for name, atom in state.entries.items()
+            if text_terms(query.task) & text_terms(name, atom.value)
+        )
+    for pattern in patterns:
         if pattern.endswith(".*"):
             prefix = pattern[:-1]
             fields = (
@@ -457,11 +465,11 @@ def _retrieve_state(
             entry = state.entries.get(field_name)
             if entry is None:
                 continue
-            content = entry.value
-            if field_name.startswith("affect.current."):
-                content = decay_assessment(content, as_of)
-                if content is None:
-                    continue
+            if _closed_legacy_conflict(field_name, state):
+                continue
+            content = state_content(field_name, entry, query, as_of)
+            if content is None:
+                continue
             risk = 1.0 if field_name.startswith("metacognition.") else 0.0
             candidates.append(
                 RetrievalCandidate(
@@ -485,11 +493,122 @@ def _retrieve_state(
                     reason="question maps to this state field",
                 )
             )
+    candidates.extend(conflict_candidates(query, state))
     unique = {candidate.candidate_id: candidate for candidate in candidates}
     return RetrievalResult(
         candidates=tuple(unique.values()),
         index_status="used" if active_index is not None else "authoritative_scan",
     )
+
+
+def state_content(
+    field_name: str,
+    atom: StateAtom,
+    query: RetrievalQuery,
+    as_of: datetime,
+) -> object | None:
+    if atom.valid_from > as_of:
+        return None
+    expired = atom.expires_at is not None and atom.expires_at <= as_of
+    if query.purpose == "cognition:metacognition":
+        return {
+            "value": atom.value,
+            "cognition_type": atom.cognition_type.value,
+            "status": "expired" if expired else "current",
+            "valid_from": atom.valid_from.isoformat(),
+            "expires_at": atom.expires_at.isoformat() if atom.expires_at else None,
+            "contribution_ids": [str(item) for item in atom.contribution_ids],
+        }
+    if expired:
+        return None
+    if field_name.startswith("affect.current."):
+        return decay_assessment(atom.value, as_of)
+    return atom.value
+
+
+def _closed_legacy_conflict(field_name: str, state: SubjectState) -> bool:
+    prefix = "metacognition.conflicts."
+    if not field_name.startswith(prefix):
+        return False
+    records = tuple(
+        item
+        for item in state.conflicts
+        if item.target_field == field_name[len(prefix) :]
+    )
+    return bool(records) and all(
+        item.status is not ConflictStatus.OPEN for item in records
+    )
+
+
+def conflict_candidates(
+    query: RetrievalQuery, state: SubjectState
+) -> tuple[RetrievalCandidate, ...]:
+    candidates: list[RetrievalCandidate] = []
+    for conflict in sorted(state.conflicts, key=lambda item: str(item.conflict_id)):
+        if conflict.status is not ConflictStatus.OPEN:
+            continue
+        if not any(
+            conflict.target_field.startswith(pattern.rstrip("*"))
+            for pattern in query.field_patterns
+        ) and not text_terms(query.task) & text_terms(
+            conflict.target_field, conflict.reason
+        ):
+            continue
+        evidence = tuple(
+            dict.fromkeys(
+                conflict.evidence_refs
+                + tuple(
+                    ref
+                    for change in state.changes
+                    if change.contribution.contribution_id
+                    in conflict.candidate_contribution_ids
+                    for ref in change.contribution.evidence_refs
+                )
+            )
+        )
+        content = {
+            "conflict_id": str(conflict.conflict_id),
+            "target_field": conflict.target_field,
+            "candidate_contribution_ids": [
+                str(item) for item in conflict.candidate_contribution_ids
+            ],
+            "reason": conflict.reason,
+            "status": conflict.status.value,
+            "requires_confirmation": conflict.requires_confirmation,
+            "confirmed": conflict.confirmed,
+        }
+        if query.purpose == "cognition:metacognition":
+            content["candidates"] = [
+                {
+                    "contribution_id": str(change.contribution.contribution_id),
+                    "value": change.contribution.value,
+                    "valid_from": change.contribution.valid_from.isoformat(),
+                    "confidence": change.contribution.confidence,
+                }
+                for change in state.changes
+                if change.contribution.contribution_id
+                in conflict.candidate_contribution_ids
+            ]
+        candidates.append(
+            RetrievalCandidate(
+                candidate_id=f"conflict:{conflict.conflict_id}",
+                source=RetrievalSource.CONFLICT,
+                source_ref=f"conflict:{conflict.conflict_id}",
+                target_field=conflict.target_field,
+                content=content,
+                evidence_refs=evidence,
+                confidence=1.0,
+                state_version=state.version,
+                relevance=1.0,
+                evidence_quality=evidence_quality(evidence, 1.0),
+                risk=1.0,
+                diversity=1.0,
+                task_relevance=1.0,
+                estimated_tokens=estimate_tokens(content),
+                reason="open conflict affects a task-relevant field",
+            )
+        )
+    return tuple(candidates)
 
 
 def _narrative_order(item: WorkspaceItem) -> tuple[object, ...]:

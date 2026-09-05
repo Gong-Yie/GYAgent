@@ -1,4 +1,5 @@
 from self_cognition.core.ids import memory_id
+from self_cognition.core.contributions import ContributionOperation
 from self_cognition.core.memories import (
     MemoryCues,
     MemoryConsolidationStatus,
@@ -32,6 +33,8 @@ MEMORY_TYPE_PREFIXES = (
 class StateChangeMemoryEncoder:
     def encode(self, change: StateChangeRecord) -> MemoryRecord | None:
         if change.status is not StateDecisionStatus.ACCEPTED:
+            return None
+        if change.contribution.operation is not ContributionOperation.SET:
             return None
         memory_type = self._memory_type(change.contribution.target_field)
         if memory_type is None:

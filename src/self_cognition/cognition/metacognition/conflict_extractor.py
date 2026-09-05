@@ -1,9 +1,13 @@
 from self_cognition.core.cognition import CognitionRequest
-from self_cognition.core.contributions import CognitiveContribution, CognitionType
+from self_cognition.core.contributions import (
+    CognitiveContribution,
+    CognitionType,
+    ContributionOperation,
+)
 from self_cognition.core.evidence import EvidenceRef
-from self_cognition.core.events import EventEnvelope
+from self_cognition.core.events import ConflictReviewPayload, EventEnvelope
 from self_cognition.core.ids import contribution_id
-
+from self_cognition.core.protocols import CognitionModel
 
 SOURCE_MODULE = "metacognition.conflict_extractor"
 MODULE_VERSION = "1"
@@ -17,16 +21,52 @@ CONFLICT_STATEMENT = "我既喜欢早上学习，也喜欢晚上学习"
 class ConflictMetacognitionExtractor:
     """Extracts the first explicit uncertainty and contradiction rules."""
 
-    subscriptions = frozenset({"user.message"})
+    subscriptions = frozenset(
+        {"user.message", "cognition.assessment_requested", "conflict.reviewed"}
+    )
     module_id = SOURCE_MODULE
     module_version = MODULE_VERSION
     deterministic = True
+
+    def __init__(self, model: CognitionModel | None = None) -> None:
+        self._model = model
+        self.deterministic = model is None
+        self.module_version = "2" if model is not None else MODULE_VERSION
 
     def run(
         self,
         request: CognitionRequest,
     ) -> tuple[CognitiveContribution, ...]:
-        return self.process(request.event)
+        event = request.event
+        if isinstance(event.payload, ConflictReviewPayload):
+            contribution = CognitiveContribution.set_from_event(
+                event,
+                contribution_id=contribution_id(
+                    event.event_id, SOURCE_MODULE, event.payload.target_field
+                ),
+                target_field=event.payload.target_field,
+                cognition_type=CognitionType.INFERENCE,
+                value=event.payload.review.to_state_value(),
+                confidence=1.0,
+                evidence_refs=(EvidenceRef.for_event(event),),
+                source_module=SOURCE_MODULE,
+                module_version=self.module_version,
+                explicitly_confirmed=True,
+            )
+            return (
+                replace(contribution, operation=ContributionOperation.REVIEW_CONFLICT),
+            )
+        if self._model is not None:
+            return extract_assessments(
+                request,
+                self._model,
+                kind="metacognition",
+                module_id=self.module_id,
+                module_version=self.module_version,
+            )
+        if event.event_type != "user.message":
+            return ()
+        return self.process(event)
 
     def process(self, event: EventEnvelope) -> tuple[CognitiveContribution, ...]:
         if event.payload.text == UNCERTAIN_STATEMENT:
@@ -66,3 +106,6 @@ class ConflictMetacognitionExtractor:
             source_module=SOURCE_MODULE,
             module_version=MODULE_VERSION,
         )
+from dataclasses import replace
+
+from self_cognition.cognition.assessment import extract_assessments

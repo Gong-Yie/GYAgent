@@ -3,13 +3,15 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime
 
-from self_cognition.core.affect import decay_assessment
 from self_cognition.core.indexes import WorkspaceIndex, text_terms
 from self_cognition.core.evidence import EvidenceRef
 from self_cognition.core.memories import MemoryLifecycleStatus, MemoryRecord, MemoryType
 from self_cognition.core.protocols import MemoryRepository
-from self_cognition.core.state import ConflictRecord, StateAtom, SubjectState
+from self_cognition.core.state import StateAtom, SubjectState
 from self_cognition.core.workspace import (
+    _closed_legacy_conflict,
+    conflict_candidates,
+    state_content,
     RetrievalCandidate,
     RetrievalQuery,
     RetrievalResult,
@@ -63,7 +65,7 @@ class HybridWorkspaceRetriever:
                 indexed_refs,
                 frozenset(state.entries),
             ),
-            *self._conflict_candidates(query, state),
+            *conflict_candidates(query, state),
         ]
         if run_info is not None:
             candidates.append(self._run_candidate(run_info))
@@ -108,11 +110,11 @@ class HybridWorkspaceRetriever:
             )
             if relevance == 0.0 or not _in_time_range(query, atom.created_at):
                 continue
-            content = atom.value
-            if field_name.startswith("affect.current."):
-                content = decay_assessment(content, as_of)
-                if content is None:
-                    continue
+            if _closed_legacy_conflict(field_name, state):
+                continue
+            content = state_content(field_name, atom, query, as_of)
+            if content is None:
+                continue
             risk = 1.0 if field_name.startswith("metacognition.") else 0.0
             result.append(
                 _candidate_from_state(
@@ -168,44 +170,6 @@ class HybridWorkspaceRetriever:
                 continue
             relevance = max(task_relevance, view.score)
             result.append(_candidate_from_memory(view, target_field, relevance))
-        return tuple(result)
-
-    @staticmethod
-    def _conflict_candidates(
-        query: RetrievalQuery,
-        state: SubjectState,
-    ) -> tuple[RetrievalCandidate, ...]:
-        result: list[RetrievalCandidate] = []
-        for conflict in sorted(state.conflicts, key=lambda item: item.target_field):
-            if _relevance(query, conflict.target_field, conflict.reason, False) == 0.0:
-                continue
-            evidence_refs = _conflict_evidence(conflict, state)
-            content = {
-                "target_field": conflict.target_field,
-                "candidate_contribution_ids": tuple(
-                    str(value) for value in conflict.candidate_contribution_ids
-                ),
-                "reason": conflict.reason,
-            }
-            result.append(
-                RetrievalCandidate(
-                    candidate_id=f"conflict:{conflict.target_field}",
-                    source=RetrievalSource.CONFLICT,
-                    source_ref=f"conflict:{conflict.target_field}",
-                    target_field=conflict.target_field,
-                    content=content,
-                    evidence_refs=evidence_refs,
-                    confidence=1.0,
-                    state_version=state.version,
-                    relevance=1.0,
-                    evidence_quality=evidence_quality(evidence_refs, 1.0),
-                    risk=1.0,
-                    diversity=1.0,
-                    task_relevance=1.0,
-                    estimated_tokens=estimate_tokens(content),
-                    reason="open conflict affects a task-relevant field",
-                )
-            )
         return tuple(result)
 
     @staticmethod
@@ -337,24 +301,6 @@ def _in_time_range(query: RetrievalQuery, occurred_at: datetime) -> bool:
         (query.time_from is None or occurred_at >= query.time_from)
         and (query.time_to is None or occurred_at <= query.time_to)
     )
-
-
-def _conflict_evidence(
-    conflict: ConflictRecord,
-    state: SubjectState,
-) -> tuple[EvidenceRef, ...]:
-    contribution_ids = set(conflict.candidate_contribution_ids)
-    evidence = []
-    seen = set()
-    for change in state.changes:
-        if change.contribution.contribution_id not in contribution_ids:
-            continue
-        for reference in change.contribution.evidence_refs:
-            if reference.evidence_id in seen:
-                continue
-            seen.add(reference.evidence_id)
-            evidence.append(reference)
-    return tuple(evidence)
 
 
 def _with_diversity(

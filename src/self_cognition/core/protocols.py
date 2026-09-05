@@ -16,7 +16,7 @@ from self_cognition.core.processing import (
     ProcessingRecord,
     ProcessingStatus,
 )
-from self_cognition.core.scopes import SubjectScope
+from self_cognition.core.scopes import MindScope, SubjectScope
 from self_cognition.core.state import SubjectState
 
 @runtime_checkable
@@ -42,6 +42,9 @@ class CognitionModel(Protocol):
 
 @runtime_checkable
 class EventStore(Protocol):
+
+    def read_by_mind(self, mind: MindScope) -> tuple[EventEnvelope, ...]: ...
+
     def append(self, event: EventEnvelope) -> None: ...
 
     def append_many(self, events: tuple[EventEnvelope, ...]) -> None: ...
@@ -94,6 +97,9 @@ class StateRepository(Protocol):
 
 @runtime_checkable
 class MemoryRepository(Protocol):
+
+    def read_by_mind(self, mind: MindScope) -> tuple[MemoryRecord, ...]: ...
+
     def load(
         self,
         subject: SubjectScope,

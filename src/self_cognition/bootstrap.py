@@ -34,6 +34,7 @@ from self_cognition.cognition.relationship.relationship_extractor import (
     RelationshipExtractor,
 )
 from self_cognition.core.protocols import (
+    CognitionModel,
     EvidenceRepository,
     DeletionRepository,
     EventStore,
@@ -124,6 +125,8 @@ def build_container(
     dotenv_path: str | Path = ".env",
     module_registrations: tuple[ModuleRegistration, ...] | None = None,
     dialogue_model: RuleBasedDialogueModel | None = None,
+    metacognition_model: CognitionModel | None = None,
+    affect_model: CognitionModel | None = None,
 ) -> ApplicationContainer:
     resolved_settings = settings or load_settings(dotenv_path)
     if data_dir is not None:
@@ -152,7 +155,8 @@ def build_container(
     process_journal = FileProcessJournal(layout.processing)
     FileProcessingRecovery(layout.event_log, process_journal).reconcile()
     module_registry = _module_registry(
-        module_registrations or _default_module_registrations(),
+        module_registrations
+        or _default_module_registrations(metacognition_model, affect_model),
         resolved_settings.enabled_modules,
     )
     workspace_builder = WorkspaceBuilder(
@@ -230,7 +234,10 @@ def build_container(
     )
 
 
-def _default_module_registrations() -> tuple[ModuleRegistration, ...]:
+def _default_module_registrations(
+    metacognition_model: CognitionModel | None = None,
+    affect_model: CognitionModel | None = None,
+) -> tuple[ModuleRegistration, ...]:
     return (
         ModuleRegistration(
             "semantic.preference_extractor",
@@ -277,8 +284,8 @@ def _default_module_registrations() -> tuple[ModuleRegistration, ...]:
         ModuleRegistration(
             "metacognition.conflict_extractor",
             "metacognition",
-            "1",
-            ConflictMetacognitionExtractor(),
+            "2" if metacognition_model is not None else "1",
+            ConflictMetacognitionExtractor(metacognition_model),
         ),
         ModuleRegistration(
             "identity.identity_value_extractor",
@@ -295,8 +302,8 @@ def _default_module_registrations() -> tuple[ModuleRegistration, ...]:
         ModuleRegistration(
             "affect.affect_extractor",
             "affect",
-            "1",
-            AffectExtractor(),
+            "2" if affect_model is not None else "1",
+            AffectExtractor(affect_model),
         ),
         ModuleRegistration(
             "narrative.narrative_extractor",

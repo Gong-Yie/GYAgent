@@ -19,6 +19,7 @@ from self_cognition.core.cognition import (
 )
 from self_cognition.core.evidence import EvidenceRef
 from self_cognition.core.events import (
+    AssessmentRequestPayload,
     CognitionModuleResultPayload,
     CognitionCorrectionPayload,
     EventEnvelope,
@@ -348,7 +349,23 @@ class ProcessEventService:
         )
 
     def _append_event(self, event: EventEnvelope) -> None:
+        if isinstance(event.payload, AssessmentRequestPayload):
+            origin = event.payload.source_event
+            originals = self._event_store.read_by_subject(origin.subject)
+            if not any(
+                replace(candidate, run_id=None, correlation_id=None)
+                == replace(origin, run_id=None, correlation_id=None)
+                for candidate in originals
+            ):
+                raise ContractValidationError(
+                    "assessment source must be a persisted event"
+                )
         self._event_store.append(event)
+        if not any(
+            stored.event_id == event.event_id
+            for stored in self._event_store.read_by_subject(event.subject)
+        ):
+            raise ContractValidationError("deleted event cannot be processed again")
         self._evidence_repository.append(EvidenceRef.for_event(event))
 
     def _append_events(self, events: tuple[EventEnvelope, ...]) -> None:

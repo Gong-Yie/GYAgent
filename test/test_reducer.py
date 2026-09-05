@@ -140,6 +140,7 @@ def test_batch_conflict_is_pending_and_safe_to_replay() -> None:
                 target_field="preferences.study_time",
                 candidate_contribution_ids=(UUID(int=1), UUID(int=2)),
                 reason=CONFLICT_REASON,
+                evidence_refs=evening.evidence_refs + morning.evidence_refs,
             )
         }
     )

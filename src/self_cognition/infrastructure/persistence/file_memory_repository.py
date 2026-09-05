@@ -15,7 +15,7 @@ from self_cognition.core.memories import (
     MemoryRecord,
     MemoryType,
 )
-from self_cognition.core.scopes import SubjectScope
+from self_cognition.core.scopes import MindScope, SubjectScope
 from self_cognition.infrastructure.persistence.atomic_io import atomic_write_text
 from self_cognition.infrastructure.persistence.file_lock import FileLock
 from self_cognition.infrastructure.persistence.serialization import (
@@ -127,6 +127,29 @@ class FileMemoryRepository:
     def rebuild_index(self, subject: SubjectScope) -> None:
         with FileLock(self._lock_path(subject)):
             self._write_index_unlocked(subject)
+
+    def read_by_mind(self, mind: MindScope) -> tuple[MemoryRecord, ...]:
+        if not isinstance(mind, MindScope):
+            raise TypeError("mind must be a MindScope")
+        subjects: set[SubjectScope] = set()
+        directory = self._directory / _digest(mind.mind_id)
+        for path in directory.glob("*/*/*/*.json"):
+            record = memory_from_json(path.read_text(encoding="utf-8"))
+            if record.subject.mind != mind or path != self._version_path(
+                record.subject, record.memory_id, record.version
+            ):
+                raise MalformedSerializedDataError(
+                    "memory namespace does not match its path"
+                )
+            subjects.add(record.subject)
+        return tuple(
+            record
+            for subject in sorted(
+                subjects,
+                key=lambda item: (item.subject.kind.value, item.subject.subject_id),
+            )
+            for record in self.read_by_subject(subject)
+        )
 
     def delete(
         self,

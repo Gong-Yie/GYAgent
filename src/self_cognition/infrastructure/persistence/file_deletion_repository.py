@@ -4,6 +4,8 @@ from pathlib import Path
 from uuid import UUID
 
 from self_cognition.core.deletions import (
+    DeletionImpact,
+    InvalidatedModuleResult,
     DeletionPlan,
     DeletionSelector,
     DeletionStatus,
@@ -97,7 +99,7 @@ class FileDeletionRepository:
 def _plan_to_json(plan: DeletionPlan) -> str:
     selector = plan.selector
     payload = {
-        "schema_version": 1,
+        "schema_version": 2 if plan.impacts else 1,
         "plan_id": str(plan.plan_id),
         "digest": plan.digest,
         "selector": {
@@ -129,6 +131,8 @@ def _plan_to_json(plan: DeletionPlan) -> str:
         "cache_result": plan.cache_result,
         "export_result": plan.export_result,
     }
+    if plan.impacts:
+        payload["impacts"] = [item.to_dict() for item in plan.impacts]
     return json.dumps(
         payload,
         ensure_ascii=False,
@@ -140,7 +144,7 @@ def _plan_to_json(plan: DeletionPlan) -> str:
 def _plan_from_json(payload: str) -> DeletionPlan:
     try:
         values = json.loads(payload)
-        if values.get("schema_version") != 1:
+        if values.get("schema_version") not in (1, 2):
             raise ValueError("unsupported deletion schema")
         selector_values = values["selector"]
         selector = DeletionSelector(
@@ -176,6 +180,33 @@ def _plan_from_json(payload: str) -> DeletionPlan:
             failure_type=values["failure_type"],
             cache_result=values["cache_result"],
             export_result=values["export_result"],
+            impacts=(
+                tuple(
+                    DeletionImpact(
+                        subject=SubjectScope(
+                            MindScope(item["mind_id"]),
+                            SubjectRef(
+                                SubjectKind(item["subject_kind"]), item["subject_id"]
+                            ),
+                        ),
+                        event_ids=tuple(UUID(value) for value in item["event_ids"]),
+                        memory_ids=tuple(UUID(value) for value in item["memory_ids"]),
+                        invalidated_results=tuple(
+                            InvalidatedModuleResult(
+                                event_id=UUID(result["event_id"]),
+                                cause_id=UUID(result["cause_id"]),
+                                module_id=result["module_id"],
+                                module_version=result["module_version"],
+                                deterministic=result["deterministic"],
+                            )
+                            for result in item["invalidated_results"]
+                        ),
+                    )
+                    for item in values["impacts"]
+                )
+                if values["schema_version"] == 2
+                else ()
+            ),
         )
         if values["digest"] != plan.digest:
             raise ValueError("deletion plan digest does not match contents")

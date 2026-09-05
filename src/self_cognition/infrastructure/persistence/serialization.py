@@ -15,6 +15,8 @@ from self_cognition.core.errors import (
 )
 from self_cognition.core.evidence import EvidenceRef, EvidenceSourceKind
 from self_cognition.core.events import (
+    AssessmentRequestPayload,
+    ConflictReviewPayload,
     CapabilityObservationPayload,
     CognitionModuleResultPayload,
     CognitionCorrectionPayload,
@@ -42,6 +44,7 @@ from self_cognition.core.memories import (
     MemorySourceRef,
     MemoryType,
 )
+from self_cognition.core.metacognition import ConflictReview, ConflictStatus
 from self_cognition.core.scopes import (
     DEFAULT_MIND_ID,
     ConversationScope,
@@ -61,7 +64,7 @@ from self_cognition.core.state import (
 )
 
 
-STATE_SCHEMA_VERSION = 4
+STATE_SCHEMA_VERSION = 5
 MEMORY_SCHEMA_VERSION = 4
 MEMORY_ACCESS_SCHEMA_VERSION = 1
 LEGACY_STATE_TIME = datetime(1970, 1, 1, tzinfo=timezone.utc)
@@ -478,6 +481,8 @@ def memory_access_from_json(payload: str) -> MemoryAccessRecord:
 def _event_payload_to_dict(
     payload: (
         UserMessagePayload
+        | AssessmentRequestPayload
+        | ConflictReviewPayload
         | CognitionCorrectionPayload
         | SelfModelObservationPayload
         | CapabilityObservationPayload
@@ -487,6 +492,16 @@ def _event_payload_to_dict(
         | ProcessingFailurePayload
     ),
 ) -> dict[str, object]:
+    if isinstance(payload, AssessmentRequestPayload):
+        return {
+            "text": payload.text,
+            "source_event": event_to_dict(payload.source_event),
+        }
+    if isinstance(payload, ConflictReviewPayload):
+        return {
+            "target_field": payload.target_field,
+            "review": payload.review.to_state_value(),
+        }
     if isinstance(payload, UserMessagePayload):
         return {"text": payload.text}
     if isinstance(payload, CognitionCorrectionPayload):
@@ -557,6 +572,8 @@ def _event_payload_from_dict(
     path: str,
 ) -> (
     UserMessagePayload
+    | AssessmentRequestPayload
+    | ConflictReviewPayload
     | CognitionCorrectionPayload
     | SelfModelObservationPayload
     | CapabilityObservationPayload
@@ -566,6 +583,20 @@ def _event_payload_from_dict(
     | ProcessingFailurePayload
 ):
     values = _require_object(value, path)
+    if event_type == "cognition.assessment_requested":
+        _require_keys(values, {"text", "source_event"}, path)
+        origin = _require_object(values["source_event"], f"{path}.source_event")
+        if origin.get("event_type") == "cognition.assessment_requested":
+            raise MalformedSerializedDataError("assessment requests cannot nest")
+        return AssessmentRequestPayload(
+            _require_string(values["text"], f"{path}.text"), event_from_dict(origin)
+        )
+    if event_type == "conflict.reviewed":
+        _require_keys(values, {"target_field", "review"}, path)
+        return ConflictReviewPayload(
+            _require_string(values["target_field"], f"{path}.target_field"),
+            ConflictReview.from_state_value(values["review"]),
+        )
     if event_type == "user.message":
         _require_keys(values, {"text"}, path)
         return UserMessagePayload(
@@ -775,12 +806,10 @@ def state_to_dict(state: SubjectState) -> dict[str, Any]:
                 "confidence": entry.confidence,
                 "scope": _data_scope_to_dict(entry.scope),
                 "evidence_refs": [
-                    _evidence_ref_to_dict(evidence)
-                    for evidence in entry.evidence_refs
+                    _evidence_ref_to_dict(evidence) for evidence in entry.evidence_refs
                 ],
                 "contribution_ids": [
-                    str(contribution_id)
-                    for contribution_id in entry.contribution_ids
+                    str(contribution_id) for contribution_id in entry.contribution_ids
                 ],
                 "created_at": entry.created_at.isoformat(),
                 "valid_from": entry.valid_from.isoformat(),
@@ -793,8 +822,7 @@ def state_to_dict(state: SubjectState) -> dict[str, Any]:
             for target_field, entry in sorted(state.entries.items())
         },
         "applied_contribution_ids": sorted(
-            str(contribution_id)
-            for contribution_id in state.applied_contribution_ids
+            str(contribution_id) for contribution_id in state.applied_contribution_ids
         ),
         "conflicts": [
             {
@@ -804,6 +832,18 @@ def state_to_dict(state: SubjectState) -> dict[str, Any]:
                     for contribution_id in conflict.candidate_contribution_ids
                 ],
                 "reason": conflict.reason,
+                "conflict_id": str(conflict.conflict_id),
+                "status": conflict.status.value,
+                "evidence_refs": [
+                    _evidence_ref_to_dict(ref) for ref in conflict.evidence_refs
+                ],
+                "requires_confirmation": conflict.requires_confirmation,
+                "confirmed": conflict.confirmed,
+                "resolution_reason": conflict.resolution_reason,
+                "reviewed_by": _optional_uuid_to_string(conflict.reviewed_by),
+                "selected_contribution_id": _optional_uuid_to_string(
+                    conflict.selected_contribution_id
+                ),
             }
             for conflict in sorted(
                 state.conflicts,
@@ -836,7 +876,7 @@ def state_from_dict(data: object) -> SubjectState:
         if schema_version >= 2
         else set()
     )
-    change_fields = {"changes"} if schema_version == STATE_SCHEMA_VERSION else set()
+    change_fields = {"changes"} if schema_version >= 4 else set()
     _require_keys(
         values,
         {
@@ -904,7 +944,7 @@ def state_from_dict(data: object) -> SubjectState:
                 "valid_from",
                 "expires_at",
             }
-            if schema_version == STATE_SCHEMA_VERSION
+            if schema_version >= 4
             else set()
         )
         _require_keys(
@@ -932,7 +972,7 @@ def state_from_dict(data: object) -> SubjectState:
                 _legacy_event_evidence(event_id, subject_scope)
                 for event_id in legacy_event_ids
             )
-        if schema_version == STATE_SCHEMA_VERSION:
+        if schema_version >= 4:
             try:
                 cognition_type = CognitionType(
                     _require_string(
@@ -1001,7 +1041,25 @@ def state_from_dict(data: object) -> SubjectState:
         conflict = _require_object(raw_conflict, f"state.conflicts[{index}]")
         _require_keys(
             conflict,
-            {"target_field", "candidate_contribution_ids", "reason"},
+            {
+                "target_field",
+                "candidate_contribution_ids",
+                "reason",
+                *(
+                    {
+                        "conflict_id",
+                        "status",
+                        "evidence_refs",
+                        "requires_confirmation",
+                        "confirmed",
+                        "resolution_reason",
+                        "reviewed_by",
+                        "selected_contribution_id",
+                    }
+                    if schema_version >= 5
+                    else set()
+                ),
+            },
             f"state.conflicts[{index}]",
         )
         conflicts.add(
@@ -1018,14 +1076,11 @@ def state_from_dict(data: object) -> SubjectState:
                     conflict["reason"],
                     f"state.conflicts[{index}].reason",
                 ),
+                **(_conflict_metadata(conflict) if schema_version >= 5 else {}),
             )
         )
 
-    changes = (
-        _state_changes_from_list(values["changes"])
-        if schema_version == STATE_SCHEMA_VERSION
-        else ()
-    )
+    changes = _state_changes_from_list(values["changes"]) if schema_version >= 4 else ()
 
     return SubjectState(
         subject_id=subject_id,
@@ -1041,6 +1096,41 @@ def state_from_dict(data: object) -> SubjectState:
 
 def state_to_json(state: SubjectState) -> str:
     return _to_json(state_to_dict(state), "state")
+
+
+def _conflict_metadata(value: dict[str, Any]) -> dict[str, Any]:
+    record = ConflictRecord(
+        target_field=value["target_field"],
+        candidate_contribution_ids=_require_uuid_tuple(
+            value["candidate_contribution_ids"], "conflict.candidates"
+        ),
+        reason=value["reason"],
+    )
+    if _require_uuid(value["conflict_id"], "conflict.id") != record.conflict_id:
+        raise MalformedSerializedDataError("conflict ID does not match candidates")
+    try:
+        status = ConflictStatus(value["status"])
+    except (ValueError, TypeError) as error:
+        raise MalformedSerializedDataError("conflict status is invalid") from error
+    return {
+        "status": status,
+        "evidence_refs": _require_evidence_ref_tuple(
+            value["evidence_refs"], "conflict.evidence"
+        ),
+        "requires_confirmation": _require_bool(
+            value["requires_confirmation"], "conflict.requires_confirmation"
+        ),
+        "confirmed": _require_bool(value["confirmed"], "conflict.confirmed"),
+        "resolution_reason": _require_optional_non_blank_string(
+            value["resolution_reason"], "conflict.resolution_reason"
+        ),
+        "reviewed_by": _require_optional_uuid(
+            value["reviewed_by"], "conflict.reviewed_by"
+        ),
+        "selected_contribution_id": _require_optional_uuid(
+            value["selected_contribution_id"], "conflict.selected_contribution_id"
+        ),
+    }
 
 
 def state_from_json(payload: str) -> SubjectState:
@@ -1277,15 +1367,13 @@ def _require_supported_memory_schema(values: dict[str, Any]) -> int:
 
 def _require_supported_state_schema(values: dict[str, Any]) -> int:
     version = values.get("schema_version")
-    if version in (1, 2, 3, STATE_SCHEMA_VERSION) and not isinstance(version, bool):
+    if version in (1, 2, 3, 4, STATE_SCHEMA_VERSION) and not isinstance(version, bool):
         return version
     if isinstance(version, int) and not isinstance(version, bool):
         raise UnsupportedSchemaVersionError(
             f"unsupported state schema version: {version}"
         )
-    raise MalformedSerializedDataError(
-        "state.schema_version must be 1, 2, 3, or 4"
-    )
+    raise MalformedSerializedDataError("state.schema_version must be 1, 2, 3, 4, or 5")
 
 
 def _require_keys(

@@ -6,7 +6,7 @@ from uuid import UUID
 
 from self_cognition.core.errors import MalformedSerializedDataError
 from self_cognition.core.events import EventEnvelope
-from self_cognition.core.scopes import SubjectScope
+from self_cognition.core.scopes import MindScope, SubjectScope
 from self_cognition.infrastructure.persistence.serialization import (
     event_from_json,
     event_to_json,
@@ -101,7 +101,13 @@ class FileEventStore:
             ]
             self._event_ids.difference_update(targets)
             payload = "".join(event_to_json(event) + "\n" for event in self._events)
-            atomic_write_text(self._path, payload)
+        atomic_write_text(self._path, payload)
+
+    def read_by_mind(self, mind: MindScope) -> tuple[EventEnvelope, ...]:
+        if not isinstance(mind, MindScope):
+            raise TypeError("mind must be a MindScope")
+        with self._lock:
+            return tuple(event for event in self._events if event.subject.mind == mind)
 
     def _read_events(self) -> tuple[EventEnvelope, ...]:
         if not self._path.exists():

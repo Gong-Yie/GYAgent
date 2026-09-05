@@ -9,7 +9,8 @@ from self_cognition.core.identity import (
     LimitationStatus,
 )
 from self_cognition.core.workspace import Workspace, WorkspaceItem
-
+from self_cognition.core.workspace import RetrievalSource
+from self_cognition.core.metacognition import MetacognitiveAssessment
 
 STUDY_TIME_QUESTION = "我喜欢什么时候学习？"
 STUDY_TIME_FIELD = "preferences.study_time"
@@ -47,6 +48,40 @@ class DialogueResponse:
 
 class RuleBasedDialogueModel:
     def respond(self, question: str, workspace: Workspace) -> DialogueResponse:
+        assessments = tuple(
+            item
+            for item in workspace.items
+            if item.target_field.startswith("metacognition.assessments.")
+        )
+        if assessments:
+            return DialogueResponse(
+                "；".join(_describe_assessment(item) for item in assessments),
+                _evidence_from(assessments),
+            )
+        conflicts = workspace.items_from(RetrievalSource.CONFLICT)
+        if conflicts and not any(
+            item.target_field == STUDY_TIME_CONFLICT_FIELD for item in workspace.items
+        ):
+            return DialogueResponse(
+                "当前仍有未解决的冲突，不能给出确定结论："
+                + "；".join(str(item.content["reason"]) for item in conflicts),
+                _evidence_from(conflicts),
+            )
+        response = self._respond(question, workspace)
+        used = tuple(
+            item
+            for item in workspace.items
+            if any(ref in response.evidence_refs for ref in item.evidence_refs)
+        )
+        if used and any(item.confidence < 1.0 for item in used):
+            confidence = min(item.confidence for item in used)
+            return DialogueResponse(
+                f"以下判断尚不确定（评估置信度 {confidence:.2f}，不是正确概率）：{response.text}",
+                response.evidence_refs,
+            )
+        return response
+
+    def _respond(self, question: str, workspace: Workspace) -> DialogueResponse:
         if question == STUDY_TIME_QUESTION:
             by_field = {item.target_field: item for item in workspace.items}
             conflict = by_field.get(STUDY_TIME_CONFLICT_FIELD)
@@ -251,6 +286,8 @@ class RuleBasedDialogueModel:
                 content = item.content
                 if not isinstance(content, dict):
                     break
+                if "goal_ids" in content:
+                    return _affect_response(item)
                 return DialogueResponse(
                     text=(
                         f"你对{content['target']}感到{content['emotion']}，"
@@ -295,10 +332,14 @@ class RuleBasedDialogueModel:
                 ),
             )
 
-        return DialogueResponse(
-            text="我还不知道这个问题的答案。",
-            evidence_refs=(),
-        )
+        for item in workspace.items:
+            if (
+                item.target_field.startswith("affect.current.")
+                and isinstance(item.content, dict)
+                and "goal_ids" in item.content
+            ):
+                return _affect_response(item)
+        return DialogueResponse(text="我还不知道这个问题的答案。", evidence_refs=())
 
     @staticmethod
     def _answer_single_field(
@@ -315,6 +356,56 @@ class RuleBasedDialogueModel:
                     evidence_refs=item.evidence_refs,
                 )
         return DialogueResponse(text=unknown_text, evidence_refs=())
+
+
+def _describe_assessment(item: WorkspaceItem) -> str:
+    assessment = MetacognitiveAssessment.from_state_value(item.content)
+    statuses = {
+        "known": "有相关认知记录",
+        "unknown": "仍不知道",
+        "conflict": "存在冲突",
+        "expired": "认知已过期",
+    }
+    bases = {"direct": "直接证据", "inference": "推断", "hypothesis": "假设"}
+    causes = {
+        "permission": "权限",
+        "environment": "环境",
+        "input": "输入",
+        "model": "模型",
+        "strategy": "策略",
+        "unknown": "原因未知",
+    }
+    actions = {
+        "ask": "询问",
+        "search": "搜索",
+        "retry": "重试",
+        "change_strategy": "换策略",
+        "stop": "停止",
+    }
+    text = (
+        f"关于{assessment.target}：{statuses[assessment.status.value]}，"
+        f"依据类型为{bases[assessment.basis.value]}；{assessment.explanation}。"
+        f"评估置信度 {item.confidence:.2f}（不是统计校准的正确概率）。"
+    )
+    if assessment.failure_cause is not None:
+        text += f"失败归因：{causes[assessment.failure_cause.value]}。"
+    if assessment.suggestions:
+        text += (
+            "建议"
+            + "、".join(actions[action.value] for action in assessment.suggestions)
+            + "；尚未执行。"
+        )
+    return text
+
+
+def _affect_response(item: WorkspaceItem) -> DialogueResponse:
+    content = item.content
+    return DialogueResponse(
+        f"对{content['target']}的计算性情感评估为{content['emotion']}，"
+        f"当前强度约 {content['current_intensity']:.2f}；"
+        "这是可衰减的评估状态，不代表真实感受，也不替代价值判断。",
+        item.evidence_refs,
+    )
 
 
 def _evidence_from(items: tuple[WorkspaceItem, ...]) -> tuple[EvidenceRef, ...]:

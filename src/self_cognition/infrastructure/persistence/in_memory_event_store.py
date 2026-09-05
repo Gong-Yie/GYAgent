@@ -2,8 +2,7 @@ from uuid import UUID
 from threading import RLock
 
 from self_cognition.core.events import EventEnvelope
-from self_cognition.core.scopes import SubjectScope
-
+from self_cognition.core.scopes import MindScope, SubjectScope
 
 class InMemoryEventStore:
     def __init__(self) -> None:
@@ -41,6 +40,12 @@ class InMemoryEventStore:
             return tuple(
                 event for event in self._events if event.subject == subject
             )
+
+    def read_by_mind(self, mind: MindScope) -> tuple[EventEnvelope, ...]:
+        if not isinstance(mind, MindScope):
+            raise TypeError("mind must be a MindScope")
+        with self._lock:
+            return tuple(event for event in self._events if event.subject.mind == mind)
 
     def redact(
         self,

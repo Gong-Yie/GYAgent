@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
 from uuid import UUID
@@ -14,6 +14,7 @@ from self_cognition.core.identity import (
     SelfModelObservationValue,
 )
 from self_cognition.core.ids import new_event_id
+from self_cognition.core.metacognition import ConflictReview
 from self_cognition.core.scopes import (
     ConversationScope,
     DataScope,
@@ -64,6 +65,30 @@ class CognitionCorrectionPayload:
             UUID,
         ):
             raise ContractValidationError("corrected_memory_id must be a UUID")
+
+
+@dataclass(frozen=True, slots=True)
+class AssessmentRequestPayload:
+    text: str
+    source_event: EventEnvelope
+
+    def __post_init__(self) -> None:
+        _require_non_blank(self.text, "assessment task")
+        if not isinstance(self.source_event, EventEnvelope):
+            raise ContractValidationError("assessment requires a source event")
+        if self.source_event.event_type == "cognition.assessment_requested":
+            raise ContractValidationError("assessment requests cannot nest")
+
+
+@dataclass(frozen=True, slots=True)
+class ConflictReviewPayload:
+    target_field: str
+    review: ConflictReview
+
+    def __post_init__(self) -> None:
+        _require_non_blank(self.target_field, "conflict target field")
+        if not isinstance(self.review, ConflictReview):
+            raise ContractValidationError("conflict review payload is invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,6 +244,8 @@ class ProcessingFailurePayload:
 
 EventPayload = (
     UserMessagePayload
+    | AssessmentRequestPayload
+    | ConflictReviewPayload
     | CognitionCorrectionPayload
     | SelfModelObservationPayload
     | CapabilityObservationPayload
@@ -256,6 +283,8 @@ class EventEnvelope:
             raise ContractValidationError("actor must be a SubjectRef or None")
         expected_payloads = {
             "user.message": UserMessagePayload,
+            "cognition.assessment_requested": AssessmentRequestPayload,
+            "conflict.reviewed": ConflictReviewPayload,
             "user.correction": CognitionCorrectionPayload,
             "self_model.observation": SelfModelObservationPayload,
             "capability.observed": CapabilityObservationPayload,
@@ -287,6 +316,36 @@ class EventEnvelope:
             if self.actor != self.subject.subject:
                 raise ContractValidationError(
                     "user event actor must match its subject"
+                )
+        elif self.event_type == "conflict.reviewed":
+            if self.source is not EventSource.USER or self.actor is None:
+                raise ContractValidationError(
+                    "conflict confirmation requires a user actor"
+                )
+            if self.actor.kind is not SubjectKind.USER:
+                raise ContractValidationError(
+                    "conflict confirmation actor must be a user"
+                )
+            if (
+                self.subject.subject.kind is not SubjectKind.MIND
+                and self.actor != self.subject.subject
+            ):
+                raise ContractValidationError(
+                    "conflict review must retain subject ownership"
+                )
+        elif self.event_type == "cognition.assessment_requested":
+            if self.source is not EventSource.SYSTEM or self.actor is not None:
+                raise ContractValidationError(
+                    "assessment request must be a system event"
+                )
+            origin = self.payload.source_event
+            if self.subject != SubjectScope.for_mind(origin.subject.mind.mind_id):
+                raise ContractValidationError("assessment must target its source mind")
+            if self.causation_id != origin.event_id:
+                raise ContractValidationError("assessment must retain source causation")
+            if self.scope != replace(origin.scope, owner=self.subject):
+                raise ContractValidationError(
+                    "assessment must preserve disclosure context"
                 )
         elif self.event_type == "self_model.observation":
             self._validate_self_model_source()
@@ -372,6 +431,57 @@ class EventEnvelope:
             causation_id=causation_id,
             correlation_id=correlation_id,
             run_id=run_id,
+        )
+
+    @classmethod
+    def assessment_requested(
+        cls,
+        source_event: EventEnvelope,
+        text: str,
+        *,
+        event_id: UUID | None = None,
+        clock: Clock = SYSTEM_CLOCK,
+    ) -> EventEnvelope:
+        subject = SubjectScope.for_mind(source_event.subject.mind.mind_id)
+        now = clock.now()
+        return cls(
+            event_id=event_id or new_event_id(),
+            event_type="cognition.assessment_requested",
+            actor=None,
+            subject=subject,
+            payload=AssessmentRequestPayload(text, source_event),
+            occurred_at=now,
+            recorded_at=now,
+            source=EventSource.SYSTEM,
+            scope=replace(source_event.scope, owner=subject),
+            causation_id=source_event.event_id,
+        )
+
+    @classmethod
+    def conflict_reviewed(
+        cls,
+        subject: SubjectScope,
+        payload: ConflictReviewPayload,
+        *,
+        actor: SubjectScope,
+        event_id: UUID | None = None,
+        clock: Clock = SYSTEM_CLOCK,
+    ) -> EventEnvelope:
+        if actor.mind != subject.mind:
+            raise ContractValidationError(
+                "conflict reviewer must belong to the same mind"
+            )
+        now = clock.now()
+        return cls(
+            event_id=event_id or new_event_id(),
+            event_type="conflict.reviewed",
+            actor=actor.subject,
+            subject=subject,
+            payload=payload,
+            occurred_at=now,
+            recorded_at=now,
+            source=EventSource.USER,
+            scope=DataScope(subject, DisclosureScope.PRIVATE),
         )
 
     @classmethod

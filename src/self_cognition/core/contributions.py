@@ -11,6 +11,7 @@ from self_cognition.core.scopes import DataScope, SubjectScope
 
 class ContributionOperation(str, Enum):
     SET = "set"
+    REVIEW_CONFLICT = "review_conflict"
 
 
 class CognitionType(str, Enum):

@@ -130,6 +130,13 @@ def test_legacy_state_schemas_migrate_without_guessing_metadata(
     current = json.loads(state_to_json(make_state()))
     current["schema_version"] = schema_version
     current.pop("changes")
+    current["conflicts"] = [
+        {
+            key: conflict[key]
+            for key in ("target_field", "candidate_contribution_ids", "reason")
+        }
+        for conflict in current["conflicts"]
+    ]
     if schema_version == 1:
         current.pop("mind_id")
         current.pop("subject_kind")

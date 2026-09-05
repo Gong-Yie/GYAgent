@@ -2,11 +2,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Mapping
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from self_cognition.core.contributions import CognitiveContribution, CognitionType
 from self_cognition.core.evidence import EvidenceRef
 from self_cognition.core.errors import ContractValidationError
+from self_cognition.core.metacognition import ConflictStatus
 from self_cognition.core.scopes import (
     DataScope,
     DEFAULT_MIND_ID,
@@ -22,6 +23,36 @@ class ConflictRecord:
     target_field: str
     candidate_contribution_ids: tuple[UUID, ...]
     reason: str
+    status: ConflictStatus = ConflictStatus.OPEN
+    evidence_refs: tuple[EvidenceRef, ...] = ()
+    requires_confirmation: bool = False
+    confirmed: bool = False
+    resolution_reason: str | None = None
+    reviewed_by: UUID | None = None
+    selected_contribution_id: UUID | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.status, ConflictStatus):
+            raise ContractValidationError("conflict status is invalid")
+        if not isinstance(self.requires_confirmation, bool) or not isinstance(
+            self.confirmed, bool
+        ):
+            raise ContractValidationError("conflict confirmation flags must be boolean")
+        if self.status is not ConflictStatus.OPEN and not self.resolution_reason:
+            raise ContractValidationError(
+                "closed conflict requires a resolution reason"
+            )
+        if self.status is ConflictStatus.RESOLVED and (
+            self.selected_contribution_id not in self.candidate_contribution_ids
+        ):
+            raise ContractValidationError("resolved conflict must select a candidate")
+
+    @property
+    def conflict_id(self) -> UUID:
+        candidates = ":".join(
+            sorted(str(item) for item in self.candidate_contribution_ids)
+        )
+        return uuid5(NAMESPACE_URL, f"conflict:{self.target_field}:{candidates}")
 
 
 @dataclass(frozen=True, slots=True)
