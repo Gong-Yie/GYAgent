@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
+from self_cognition.application.replay import ReplayService
 from self_cognition.blackboard.reducer import StateReducer
 from self_cognition.blackboard.service import CognitiveSpaceService
 from self_cognition.cognition.metacognition.correction import UserCorrectionModule
@@ -22,6 +23,9 @@ from self_cognition.core.scopes import (
     SubjectScope,
 )
 from self_cognition.core.state import SubjectState
+from self_cognition.infrastructure.persistence.in_memory_event_store import (
+    InMemoryEventStore,
+)
 from self_cognition.infrastructure.persistence.serialization import (
     state_from_json,
     state_to_json,
@@ -169,3 +173,68 @@ def test_structured_relationship_and_narrative_values_roundtrip_in_state():
     )
 
     assert state_from_json(state_to_json(state)) == state
+
+
+def test_stage18_events_replay_without_rewriting_original_facts():
+    subject = SubjectScope(
+        MindScope("mind-1"),
+        SubjectRef(SubjectKind.USER, "user-1"),
+    )
+    relationship_event = Event.user_message(
+        subject,
+        "我和小明在研究项目中合作过",
+        event_id=UUID(int=1840),
+        conversation=ConversationScope("conversation-1", group_id="group-1"),
+    )
+    narrative_event = Event.user_message(
+        subject,
+        "任务：准备论文",
+        event_id=UUID(int=1841),
+    )
+    narrative_contribution = NarrativeExtractor().process(narrative_event)[0]
+    corrected_value = dict(narrative_contribution.value)
+    corrected_value.update(
+        summary="准备论文并完成初稿",
+        revision_of=corrected_value["narrative_id"],
+        version=2,
+    )
+    correction_event = Event.correction(
+        subject,
+        target_field=narrative_contribution.target_field,
+        cognition_type="inference",
+        value=corrected_value,
+        event_id=UUID(int=1842),
+    )
+    store = InMemoryEventStore()
+    store.append_many((relationship_event, narrative_event, correction_event))
+    replay = ReplayService(
+        store,
+        _engine(
+            RelationshipExtractor(),
+            NarrativeExtractor(),
+            UserCorrectionModule(),
+        ),
+    )
+
+    first = replay.replay(subject)
+    second = replay.replay(subject)
+
+    relationship = RelationshipState.from_state_value(
+        first.entries["relationships.edge.小明.研究项目"].value
+    )
+    narrative = NarrativeRecord.from_state_value(
+        first.entries[narrative_contribution.target_field].value
+    )
+    assert second == first
+    assert relationship.source == subject
+    assert relationship.scope.conversation == relationship_event.scope.conversation
+    assert narrative.summary == "准备论文并完成初稿"
+    assert narrative.revision_of == corrected_value["narrative_id"]
+    assert store.read_by_subject(subject)[1] == narrative_event
+    assert store.read_by_subject(SubjectScope.legacy_user("user-2")) == ()
+    assert store.read_by_subject(
+        SubjectScope(
+            MindScope("mind-2"),
+            SubjectRef(SubjectKind.USER, "user-1"),
+        )
+    ) == ()

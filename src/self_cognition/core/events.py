@@ -6,15 +6,33 @@ from enum import Enum
 from uuid import UUID
 
 from self_cognition.core.errors import ContractValidationError
+from self_cognition.core.dialogue import (
+    AssistantMessagePayload,
+    DialogueContextPayload,
+    DialogueFailurePayload,
+    DialogueDraft,
+    GroundingReview,
+)
 from self_cognition.core.identity import (
     CapabilityRecord,
     GoalRecord,
+    GoalStatus,
     LimitationRecord,
     SelfModelAspect,
     SelfModelObservationValue,
 )
 from self_cognition.core.ids import new_event_id
 from self_cognition.core.metacognition import ConflictReview
+from self_cognition.core.plans import (
+    GoalPlannedPayload,
+    GoalPlanningRequest,
+    GoalRequestedPayload,
+    GoalStatusChangedPayload,
+    PlanningContextPayload,
+    PlanningFailurePayload,
+    PlanRevisedPayload,
+    PlanStepResultPayload,
+)
 from self_cognition.core.scopes import (
     ConversationScope,
     DataScope,
@@ -244,6 +262,9 @@ class ProcessingFailurePayload:
 
 EventPayload = (
     UserMessagePayload
+    | DialogueContextPayload
+    | AssistantMessagePayload
+    | DialogueFailurePayload
     | AssessmentRequestPayload
     | ConflictReviewPayload
     | CognitionCorrectionPayload
@@ -253,6 +274,13 @@ EventPayload = (
     | CognitionModuleResultPayload
     | StateReductionPayload
     | ProcessingFailurePayload
+    | GoalRequestedPayload
+    | PlanningContextPayload
+    | GoalPlannedPayload
+    | PlanningFailurePayload
+    | PlanRevisedPayload
+    | PlanStepResultPayload
+    | GoalStatusChangedPayload
 )
 
 
@@ -283,6 +311,9 @@ class EventEnvelope:
             raise ContractValidationError("actor must be a SubjectRef or None")
         expected_payloads = {
             "user.message": UserMessagePayload,
+            "dialogue.started": DialogueContextPayload,
+            "assistant.message": AssistantMessagePayload,
+            "dialogue.failed": DialogueFailurePayload,
             "cognition.assessment_requested": AssessmentRequestPayload,
             "conflict.reviewed": ConflictReviewPayload,
             "user.correction": CognitionCorrectionPayload,
@@ -292,6 +323,13 @@ class EventEnvelope:
             "cognition.module_result": CognitionModuleResultPayload,
             "state.reduced": StateReductionPayload,
             "processing.failed": ProcessingFailurePayload,
+            "goal.requested": GoalRequestedPayload,
+            "planning.started": PlanningContextPayload,
+            "goal.planned": GoalPlannedPayload,
+            "planning.failed": PlanningFailurePayload,
+            "plan.revised": PlanRevisedPayload,
+            "plan.step_result": PlanStepResultPayload,
+            "goal.status_changed": GoalStatusChangedPayload,
         }
         payload_type = expected_payloads.get(self.event_type)
         if payload_type is None or not isinstance(self.payload, payload_type):
@@ -347,6 +385,92 @@ class EventEnvelope:
                 raise ContractValidationError(
                     "assessment must preserve disclosure context"
                 )
+        elif isinstance(
+            self.payload,
+            (
+                DialogueContextPayload,
+                AssistantMessagePayload,
+                DialogueFailurePayload,
+            ),
+        ):
+            payload = self.payload
+            if not isinstance(payload.request_event_id, UUID):
+                raise ContractValidationError("dialogue request ID must be a UUID")
+            if not isinstance(payload.recipient, SubjectScope):
+                raise ContractValidationError("dialogue recipient must be a subject")
+            if self.subject != SubjectScope.for_mind(payload.recipient.mind.mind_id):
+                raise ContractValidationError(
+                    "dialogue must belong to the recipient's mind"
+                )
+            if self.causation_id is None:
+                raise ContractValidationError("dialogue must retain its causal chain")
+            if isinstance(payload, AssistantMessagePayload):
+                if not isinstance(payload.answer, DialogueDraft):
+                    raise ContractValidationError("assistant answer must be structured")
+                if payload.review is not None and (
+                    not isinstance(payload.review, GroundingReview)
+                    or not payload.review.supported
+                ):
+                    raise ContractValidationError(
+                        "assistant answer must pass grounding"
+                    )
+                if payload.answer.claims and payload.review is None:
+                    raise ContractValidationError(
+                        "cognitive claims require a grounding review"
+                    )
+                if (
+                    self.source is not EventSource.MODEL
+                    or self.actor != self.subject.subject
+                ):
+                    raise ContractValidationError(
+                        "assistant messages must retain the MIND actor"
+                    )
+                if payload.answer.disclosure.scope != self.scope.disclosure:
+                    raise ContractValidationError(
+                        "assistant disclosure scope does not match"
+                    )
+            elif self.source is not EventSource.SYSTEM or self.actor is not None:
+                raise ContractValidationError(
+                    "dialogue control events must be system events"
+                )
+            if isinstance(payload, DialogueFailurePayload):
+                _require_non_blank(payload.stage, "dialogue stage")
+                _require_non_blank(payload.error_type, "dialogue error type")
+            else:
+                if any(
+                    ref.scope.owner.mind != self.subject.mind
+                    for ref in payload.evidence_refs
+                ):
+                    raise ContractValidationError(
+                        "dialogue evidence cannot cross minds"
+                    )
+            if isinstance(payload, DialogueContextPayload):
+                _require_non_blank(payload.workspace_json, "dialogue workspace")
+                if self.causation_id != payload.request_event_id:
+                    raise ContractValidationError(
+                        "dialogue context must follow its request"
+                    )
+            for version in (payload.old_version, payload.new_version):
+                if version is None and isinstance(payload, DialogueFailurePayload):
+                    continue
+                if type(version) is not int or version < 0:
+                    raise ContractValidationError("dialogue state version is invalid")
+        elif isinstance(self.payload, GoalRequestedPayload):
+            self._validate_goal_request()
+        elif isinstance(self.payload, GoalStatusChangedPayload):
+            self._validate_goal_status_change()
+        elif isinstance(self.payload, PlanStepResultPayload):
+            self._validate_planning_control({EventSource.SYSTEM, EventSource.TOOL})
+        elif isinstance(
+            self.payload,
+            (
+                PlanningContextPayload,
+                GoalPlannedPayload,
+                PlanningFailurePayload,
+                PlanRevisedPayload,
+            ),
+        ):
+            self._validate_planning_control({EventSource.SYSTEM})
         elif self.event_type == "self_model.observation":
             self._validate_self_model_source()
         elif self.event_type == "capability.observed":
@@ -376,6 +500,43 @@ class EventEnvelope:
                 raise ContractValidationError(
                     "model and system events must not have a domain actor"
                 )
+
+    def _validate_goal_request(self) -> None:
+        payload = self.payload
+        if self.subject.subject.kind is not SubjectKind.MIND:
+            raise ContractValidationError("goal request must target a mind subject")
+        if payload.goal.status is not GoalStatus.ACTIVE:
+            raise ContractValidationError("new goals must start active")
+        if self.source is EventSource.USER:
+            if self.actor is None or self.actor != payload.requested_by:
+                raise ContractValidationError("user goal request actor is invalid")
+            if self.actor.kind is not SubjectKind.USER:
+                raise ContractValidationError("goal requester must be a user")
+        elif self.source is EventSource.SYSTEM:
+            if self.actor is not None or payload.requested_by is not None:
+                raise ContractValidationError("system goal request cannot name an actor")
+        else:
+            raise ContractValidationError("models and tools cannot request goals")
+
+    def _validate_goal_status_change(self) -> None:
+        payload = self.payload
+        if self.subject.subject.kind is not SubjectKind.MIND:
+            raise ContractValidationError("goal status must target a mind subject")
+        if payload.changed_by is None:
+            if self.source is not EventSource.SYSTEM or self.actor is not None:
+                raise ContractValidationError("system goal status actor is invalid")
+        elif (
+            self.source is not EventSource.USER
+            or self.actor != payload.changed_by
+            or self.actor.kind is not SubjectKind.USER
+        ):
+            raise ContractValidationError("user goal status actor is invalid")
+
+    def _validate_planning_control(self, sources: set[EventSource]) -> None:
+        if self.subject.subject.kind is not SubjectKind.MIND:
+            raise ContractValidationError("planning events must target a mind subject")
+        if self.source not in sources or self.actor is not None:
+            raise ContractValidationError("planning event source is invalid")
 
     def _validate_self_model_source(self) -> None:
         if self.subject.subject.kind is not SubjectKind.MIND:
@@ -429,6 +590,46 @@ class EventEnvelope:
                 conversation=conversation,
             ),
             causation_id=causation_id,
+            correlation_id=correlation_id,
+            run_id=run_id,
+        )
+
+    @classmethod
+    def goal_requested(
+        cls,
+        request: GoalPlanningRequest,
+        *,
+        clock: Clock = SYSTEM_CLOCK,
+        correlation_id: UUID | None = None,
+        run_id: UUID | None = None,
+    ) -> "EventEnvelope":
+        now = clock.now()
+        return cls(
+            event_id=request.request_id,
+            event_type="goal.requested",
+            actor=(
+                request.requested_by.subject
+                if request.requested_by is not None
+                else None
+            ),
+            subject=request.owner,
+            payload=GoalRequestedPayload(
+                request.goal,
+                request.budget,
+                (
+                    request.requested_by.subject
+                    if request.requested_by is not None
+                    else None
+                ),
+            ),
+            occurred_at=now,
+            recorded_at=now,
+            source=(
+                EventSource.USER
+                if request.requested_by is not None
+                else EventSource.SYSTEM
+            ),
+            scope=DataScope(request.owner, DisclosureScope.MIND),
             correlation_id=correlation_id,
             run_id=run_id,
         )

@@ -2,6 +2,8 @@ from uuid import UUID
 from threading import RLock
 
 from self_cognition.core.events import EventEnvelope
+from self_cognition.core.dialogue import dialogue_dependency_ids
+from self_cognition.core.plans import planning_dependency_ids
 from self_cognition.core.scopes import MindScope, SubjectScope
 
 class InMemoryEventStore:
@@ -21,6 +23,10 @@ class InMemoryEventStore:
                 for event in events
                 if event.event_id not in self._event_ids
                 and event.event_id not in self._tombstones
+                and not (
+                    dialogue_dependency_ids(event) | planning_dependency_ids(event)
+                )
+                & self._tombstones
             )
             if not pending:
                 return

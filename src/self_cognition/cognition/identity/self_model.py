@@ -13,6 +13,11 @@ from self_cognition.core.identity import (
     SelfModelAspect,
 )
 from self_cognition.core.ids import contribution_id
+from self_cognition.core.plans import (
+    GoalPlannedPayload,
+    GoalRequestedPayload,
+    GoalStatusChangedPayload,
+)
 
 
 SOURCE_MODULE = "identity.self_model"
@@ -33,7 +38,13 @@ COGNITION_TYPES = {
 
 class SelfModelCognitionModule:
     subscriptions = frozenset(
-        {"self_model.observation", "capability.observed"}
+        {
+            "self_model.observation",
+            "capability.observed",
+            "goal.requested",
+            "goal.planned",
+            "goal.status_changed",
+        }
     )
     module_id = SOURCE_MODULE
     module_version = MODULE_VERSION
@@ -91,6 +102,30 @@ class SelfModelCognitionModule:
                     evidence_refs=(EvidenceRef.for_event(event),),
                     source_module=SOURCE_MODULE,
                     module_version=MODULE_VERSION,
+                ),
+            )
+        if isinstance(
+            payload,
+            (GoalRequestedPayload, GoalPlannedPayload, GoalStatusChangedPayload),
+        ):
+            goal = payload.goal
+            target_field = f"goals.{goal.goal_id}"
+            return (
+                CognitiveContribution.set_from_event(
+                    event,
+                    contribution_id=contribution_id(
+                        event.event_id,
+                        SOURCE_MODULE,
+                        target_field,
+                    ),
+                    target_field=target_field,
+                    cognition_type=CognitionType.GOAL,
+                    value=goal.to_state_value(),
+                    confidence=1.0,
+                    evidence_refs=(EvidenceRef.for_event(event),),
+                    source_module=SOURCE_MODULE,
+                    module_version=MODULE_VERSION,
+                    explicitly_confirmed=True,
                 ),
             )
         return ()

@@ -11,6 +11,7 @@ from self_cognition.core.deletions import (
     DeletionStatus,
 )
 from self_cognition.core.evidence import EvidenceSourceKind
+from self_cognition.core.dialogue import AssistantMessagePayload, DialogueContextPayload
 from self_cognition.core.events import (
     CognitionModuleResultPayload,
     EventEnvelope,
@@ -166,6 +167,12 @@ class ForgetService:
             for event in events:
                 payload = event.payload
                 dependent = event.causation_id in deleted
+                if isinstance(
+                    payload, (DialogueContextPayload, AssistantMessagePayload)
+                ):
+                    dependent = dependent or any(
+                        ref.evidence_id in deleted for ref in payload.evidence_refs
+                    )
                 if isinstance(payload, CognitionModuleResultPayload):
                     dependent = (
                         dependent

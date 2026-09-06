@@ -2,6 +2,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from self_cognition.application.process_event import ProcessEventService
+from self_cognition.application.converse import ConverseService
+from self_cognition.application.pursue_goal import PursueGoalService
+from self_cognition.core.dialogue import DialogueModel
+from self_cognition.core.plans import PlanningModel
+from self_cognition.executive.dialogue.fake import RuleDialogueAdapter
 from self_cognition.application.replay import ReplayService
 from self_cognition.application.forget import ForgetService
 from self_cognition.blackboard.reducer import StateReducer
@@ -50,6 +55,8 @@ from self_cognition.cognition.semantic.preference_extractor import (
     PreferenceExtractor,
 )
 from self_cognition.executive.dialogue.rule_based import RuleBasedDialogueModel
+from self_cognition.executive.planning.fake import RulePlanningModel
+from self_cognition.executive.planning.validator import PlanValidator
 from self_cognition.infrastructure.persistence.file_event_store import FileEventStore
 from self_cognition.infrastructure.persistence.file_deletion_repository import (
     FileDeletionRepository,
@@ -109,12 +116,15 @@ class ApplicationContainer:
     deletion_repository: DeletionRepository
     forget: ForgetService
     process_event: ProcessEventService
+    converse: ConverseService
+    pursue_goal: PursueGoalService
     event_bus: SingleMachineEventBus
     replay: ReplayService
     workspace_builder: WorkspaceBuilder
-    dialogue_model: RuleBasedDialogueModel
+    dialogue_model: RuleBasedDialogueModel | DialogueModel
     module_registry: CognitiveModuleRegistry
     capability_registry: CapabilityRegistry
+    planning_model: PlanningModel
     lifecycle: ApplicationLifecycle
 
 
@@ -124,7 +134,8 @@ def build_container(
     settings: ApplicationSettings | None = None,
     dotenv_path: str | Path = ".env",
     module_registrations: tuple[ModuleRegistration, ...] | None = None,
-    dialogue_model: RuleBasedDialogueModel | None = None,
+    dialogue_model: RuleBasedDialogueModel | DialogueModel | None = None,
+    planning_model: PlanningModel | None = None,
     metacognition_model: CognitionModel | None = None,
     affect_model: CognitionModel | None = None,
 ) -> ApplicationContainer:
@@ -194,7 +205,29 @@ def build_container(
     )
     forget.recover(now=SYSTEM_CLOCK.now())
     selected_dialogue_model = dialogue_model or RuleBasedDialogueModel()
+    converse = ConverseService(
+        process_event,
+        event_store,
+        evidence_repository,
+        state_repository,
+        workspace_builder,
+        (
+            RuleDialogueAdapter(selected_dialogue_model)
+            if isinstance(selected_dialogue_model, RuleBasedDialogueModel)
+            else selected_dialogue_model
+        ),
+    )
     capability_registry = CapabilityRegistry()
+    selected_planning_model = planning_model or RulePlanningModel()
+    pursue_goal = PursueGoalService(
+        process_event,
+        event_store,
+        state_repository,
+        workspace_builder,
+        selected_planning_model,
+        capability_registry,
+        PlanValidator(),
+    )
     lifecycle = ApplicationLifecycle(
         event_bus,
         worker_enabled=resolved_settings.worker_enabled,
@@ -207,6 +240,7 @@ def build_container(
             evidence_repository,
             state_repository,
             selected_dialogue_model,
+            selected_planning_model,
         ),
     )
     return ApplicationContainer(
@@ -224,12 +258,15 @@ def build_container(
         deletion_repository=deletion_repository,
         forget=forget,
         process_event=process_event,
+        converse=converse,
+        pursue_goal=pursue_goal,
         event_bus=event_bus,
         replay=replay,
         workspace_builder=workspace_builder,
         dialogue_model=selected_dialogue_model,
         module_registry=module_registry,
         capability_registry=capability_registry,
+        planning_model=selected_planning_model,
         lifecycle=lifecycle,
     )
 

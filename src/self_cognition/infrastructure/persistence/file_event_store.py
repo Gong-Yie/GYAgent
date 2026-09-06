@@ -6,6 +6,8 @@ from uuid import UUID
 
 from self_cognition.core.errors import MalformedSerializedDataError
 from self_cognition.core.events import EventEnvelope
+from self_cognition.core.dialogue import dialogue_dependency_ids
+from self_cognition.core.plans import planning_dependency_ids
 from self_cognition.core.scopes import MindScope, SubjectScope
 from self_cognition.infrastructure.persistence.serialization import (
     event_from_json,
@@ -34,6 +36,13 @@ class FileEventStore:
             if (
                 event.event_id in self._event_ids
                 or event.event_id in self._tombstones
+                or bool(
+                    (
+                        dialogue_dependency_ids(event)
+                        | planning_dependency_ids(event)
+                    )
+                    & self._tombstones
+                )
             ):
                 return
 
@@ -54,6 +63,10 @@ class FileEventStore:
                 for event in events
                 if event.event_id not in self._event_ids
                 and event.event_id not in self._tombstones
+                and not (
+                    dialogue_dependency_ids(event) | planning_dependency_ids(event)
+                )
+                & self._tombstones
             )
             if not pending:
                 return

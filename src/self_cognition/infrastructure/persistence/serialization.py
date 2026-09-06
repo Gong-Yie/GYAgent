@@ -14,6 +14,14 @@ from self_cognition.core.errors import (
     UnsupportedSchemaVersionError,
 )
 from self_cognition.core.evidence import EvidenceRef, EvidenceSourceKind
+from self_cognition.core.dialogue import (
+    AssistantMessagePayload,
+    DialogueContextPayload,
+    DialogueFailurePayload,
+    draft_from_dict,
+    draft_to_dict,
+    review_from_dict,
+)
 from self_cognition.core.events import (
     AssessmentRequestPayload,
     ConflictReviewPayload,
@@ -32,6 +40,7 @@ from self_cognition.core.events import (
 from self_cognition.core.identity import (
     CapabilityRecord,
     GoalRecord,
+    GoalStatus,
     LimitationRecord,
     SelfModelAspect,
 )
@@ -45,6 +54,21 @@ from self_cognition.core.memories import (
     MemoryType,
 )
 from self_cognition.core.metacognition import ConflictReview, ConflictStatus
+from self_cognition.core.plans import (
+    GoalPlannedPayload,
+    GoalRequestedPayload,
+    GoalStatusChangedPayload,
+    PlanningContextPayload,
+    PlanningFailurePayload,
+    PlanRevisedPayload,
+    PlanStepResultPayload,
+    budget_from_dict,
+    budget_to_dict,
+    plan_from_dict,
+    plan_to_dict,
+    step_result_from_dict,
+    step_result_to_dict,
+)
 from self_cognition.core.scopes import (
     DEFAULT_MIND_ID,
     ConversationScope,
@@ -481,6 +505,9 @@ def memory_access_from_json(payload: str) -> MemoryAccessRecord:
 def _event_payload_to_dict(
     payload: (
         UserMessagePayload
+        | DialogueContextPayload
+        | AssistantMessagePayload
+        | DialogueFailurePayload
         | AssessmentRequestPayload
         | ConflictReviewPayload
         | CognitionCorrectionPayload
@@ -490,8 +517,44 @@ def _event_payload_to_dict(
         | CognitionModuleResultPayload
         | StateReductionPayload
         | ProcessingFailurePayload
+        | GoalRequestedPayload
+        | PlanningContextPayload
+        | GoalPlannedPayload
+        | PlanningFailurePayload
+        | PlanRevisedPayload
+        | PlanStepResultPayload
+        | GoalStatusChangedPayload
     ),
 ) -> dict[str, object]:
+    if isinstance(
+        payload,
+        (DialogueContextPayload, AssistantMessagePayload, DialogueFailurePayload),
+    ):
+        result = {
+            "request_event_id": str(payload.request_event_id),
+            "recipient": _subject_scope_to_dict(payload.recipient),
+            "old_version": payload.old_version,
+            "new_version": payload.new_version,
+        }
+        if isinstance(payload, DialogueFailurePayload):
+            return {**result, "stage": payload.stage, "error_type": payload.error_type}
+        result["evidence_refs"] = [
+            _evidence_ref_to_dict(ref) for ref in payload.evidence_refs
+        ]
+        if isinstance(payload, DialogueContextPayload):
+            return {**result, "workspace_json": payload.workspace_json}
+        return {
+            **result,
+            "answer": draft_to_dict(payload.answer),
+            "review": (
+                None
+                if payload.review is None
+                else {
+                    "supported": payload.review.supported,
+                    "reason": payload.review.reason,
+                }
+            ),
+        }
     if isinstance(payload, AssessmentRequestPayload):
         return {
             "text": payload.text,
@@ -531,6 +594,60 @@ def _event_payload_to_dict(
         }
     if isinstance(payload, CapabilityObservationPayload):
         return {"capability": payload.capability.to_state_value()}
+    if isinstance(payload, GoalRequestedPayload):
+        return {
+            "goal": payload.goal.to_state_value(),
+            "budget": budget_to_dict(payload.budget),
+            "requested_by": (
+                _subject_ref_to_dict(payload.requested_by)
+                if payload.requested_by is not None
+                else None
+            ),
+        }
+    if isinstance(payload, PlanningContextPayload):
+        return {
+            "request_event_id": str(payload.request_event_id),
+            "goal": payload.goal.to_state_value(),
+            "budget": budget_to_dict(payload.budget),
+            "workspace_json": payload.workspace_json,
+            "evidence_refs": [
+                _evidence_ref_to_dict(ref) for ref in payload.evidence_refs
+            ],
+            "state_version": payload.state_version,
+        }
+    if isinstance(payload, GoalPlannedPayload):
+        return {
+            "request_event_id": str(payload.request_event_id),
+            "goal": payload.goal.to_state_value(),
+            "plan": plan_to_dict(payload.plan),
+        }
+    if isinstance(payload, PlanningFailurePayload):
+        return {
+            "request_event_id": str(payload.request_event_id),
+            "goal_id": payload.goal_id,
+            "stage": payload.stage,
+            "error_type": payload.error_type,
+        }
+    if isinstance(payload, PlanRevisedPayload):
+        return {
+            "request_event_id": str(payload.request_event_id),
+            "plan": plan_to_dict(payload.plan),
+            "failed_result_id": str(payload.failed_result_id),
+        }
+    if isinstance(payload, PlanStepResultPayload):
+        return {"result": step_result_to_dict(payload.result)}
+    if isinstance(payload, GoalStatusChangedPayload):
+        return {
+            "plan_id": str(payload.plan_id),
+            "previous_status": payload.previous_status.value,
+            "goal": payload.goal.to_state_value(),
+            "changed_by": (
+                _subject_ref_to_dict(payload.changed_by)
+                if payload.changed_by is not None
+                else None
+            ),
+            "reason": payload.reason,
+        }
     if isinstance(payload, ModelResponsePayload):
         return {
             "model": payload.model,
@@ -572,6 +689,9 @@ def _event_payload_from_dict(
     path: str,
 ) -> (
     UserMessagePayload
+    | DialogueContextPayload
+    | AssistantMessagePayload
+    | DialogueFailurePayload
     | AssessmentRequestPayload
     | ConflictReviewPayload
     | CognitionCorrectionPayload
@@ -581,8 +701,62 @@ def _event_payload_from_dict(
     | CognitionModuleResultPayload
     | StateReductionPayload
     | ProcessingFailurePayload
+    | GoalRequestedPayload
+    | PlanningContextPayload
+    | GoalPlannedPayload
+    | PlanningFailurePayload
+    | PlanRevisedPayload
+    | PlanStepResultPayload
+    | GoalStatusChangedPayload
 ):
     values = _require_object(value, path)
+    if event_type in {"dialogue.started", "assistant.message", "dialogue.failed"}:
+        common = {"request_event_id", "recipient", "old_version", "new_version"}
+        extra = {
+            "dialogue.started": {"workspace_json", "evidence_refs"},
+            "assistant.message": {"answer", "review", "evidence_refs"},
+            "dialogue.failed": {"stage", "error_type"},
+        }[event_type]
+        _require_keys(values, common | extra, path)
+        request_id = _require_uuid(
+            values["request_event_id"], f"{path}.request_event_id"
+        )
+        recipient = _subject_scope_from_dict(values["recipient"], f"{path}.recipient")
+        old_version, new_version = values["old_version"], values["new_version"]
+        if event_type == "dialogue.failed":
+            return DialogueFailurePayload(
+                request_id,
+                recipient,
+                _require_non_blank_string(values["stage"], f"{path}.stage"),
+                _require_non_blank_string(values["error_type"], f"{path}.error_type"),
+                old_version,
+                new_version,
+            )
+        if not isinstance(values["evidence_refs"], list):
+            raise MalformedSerializedDataError("dialogue evidence must be an array")
+        refs = tuple(
+            _evidence_ref_from_dict(ref, path) for ref in values["evidence_refs"]
+        )
+        if event_type == "dialogue.started":
+            return DialogueContextPayload(
+                request_id,
+                recipient,
+                _require_non_blank_string(
+                    values["workspace_json"], f"{path}.workspace_json"
+                ),
+                refs,
+                old_version,
+                new_version,
+            )
+        return AssistantMessagePayload(
+            request_id,
+            recipient,
+            draft_from_dict(values["answer"]),
+            refs,
+            None if values["review"] is None else review_from_dict(values["review"]),
+            old_version,
+            new_version,
+        )
     if event_type == "cognition.assessment_requested":
         _require_keys(values, {"text", "source_event"}, path)
         origin = _require_object(values["source_event"], f"{path}.source_event")
@@ -671,6 +845,107 @@ def _event_payload_from_dict(
         _require_keys(values, {"capability"}, path)
         return CapabilityObservationPayload(
             CapabilityRecord.from_state_value(values["capability"])
+        )
+    if event_type == "goal.requested":
+        _require_keys(values, {"goal", "budget", "requested_by"}, path)
+        requester = values["requested_by"]
+        return GoalRequestedPayload(
+            GoalRecord.from_state_value(values["goal"]),
+            budget_from_dict(values["budget"]),
+            (
+                None
+                if requester is None
+                else _subject_ref_from_dict(requester, f"{path}.requested_by")
+            ),
+        )
+    if event_type == "planning.started":
+        _require_keys(
+            values,
+            {
+                "request_event_id",
+                "goal",
+                "budget",
+                "workspace_json",
+                "evidence_refs",
+                "state_version",
+            },
+            path,
+        )
+        refs = values["evidence_refs"]
+        if not isinstance(refs, list):
+            raise MalformedSerializedDataError(
+                "planning evidence must be an array"
+            )
+        return PlanningContextPayload(
+            _require_uuid(values["request_event_id"], f"{path}.request_event_id"),
+            GoalRecord.from_state_value(values["goal"]),
+            budget_from_dict(values["budget"]),
+            _require_non_blank_string(
+                values["workspace_json"], f"{path}.workspace_json"
+            ),
+            tuple(_evidence_ref_from_dict(ref, path) for ref in refs),
+            _require_int(values["state_version"], f"{path}.state_version"),
+        )
+    if event_type == "goal.planned":
+        _require_keys(values, {"request_event_id", "goal", "plan"}, path)
+        return GoalPlannedPayload(
+            _require_uuid(values["request_event_id"], f"{path}.request_event_id"),
+            GoalRecord.from_state_value(values["goal"]),
+            plan_from_dict(values["plan"]),
+        )
+    if event_type == "planning.failed":
+        _require_keys(
+            values,
+            {"request_event_id", "goal_id", "stage", "error_type"},
+            path,
+        )
+        return PlanningFailurePayload(
+            _require_uuid(values["request_event_id"], f"{path}.request_event_id"),
+            _require_non_blank_string(values["goal_id"], f"{path}.goal_id"),
+            _require_non_blank_string(values["stage"], f"{path}.stage"),
+            _require_non_blank_string(values["error_type"], f"{path}.error_type"),
+        )
+    if event_type == "plan.revised":
+        _require_keys(
+            values,
+            {"request_event_id", "plan", "failed_result_id"},
+            path,
+        )
+        return PlanRevisedPayload(
+            _require_uuid(values["request_event_id"], f"{path}.request_event_id"),
+            plan_from_dict(values["plan"]),
+            _require_uuid(values["failed_result_id"], f"{path}.failed_result_id"),
+        )
+    if event_type == "plan.step_result":
+        _require_keys(values, {"result"}, path)
+        return PlanStepResultPayload(step_result_from_dict(values["result"]))
+    if event_type == "goal.status_changed":
+        _require_keys(
+            values,
+            {"plan_id", "previous_status", "goal", "changed_by", "reason"},
+            path,
+        )
+        changed_by = values["changed_by"]
+        try:
+            previous_status = GoalStatus(
+                _require_string(
+                    values["previous_status"], f"{path}.previous_status"
+                )
+            )
+        except ValueError as error:
+            raise MalformedSerializedDataError(
+                f"invalid {path}.previous_status"
+            ) from error
+        return GoalStatusChangedPayload(
+            _require_uuid(values["plan_id"], f"{path}.plan_id"),
+            previous_status,
+            GoalRecord.from_state_value(values["goal"]),
+            (
+                None
+                if changed_by is None
+                else _subject_ref_from_dict(changed_by, f"{path}.changed_by")
+            ),
+            _require_non_blank_string(values["reason"], f"{path}.reason"),
         )
     if event_type == "model.response":
         _require_keys(values, {"model", "response_id", "raw_output"}, path)

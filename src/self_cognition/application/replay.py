@@ -23,6 +23,14 @@ DERIVED_EVENT_TYPES = frozenset(
         "cognition.module_result",
         "state.reduced",
         "processing.failed",
+        "dialogue.started",
+        "assistant.message",
+        "dialogue.failed",
+        "goal.requested",
+        "planning.started",
+        "planning.failed",
+        "plan.revised",
+        "plan.step_result",
     }
 )
 
