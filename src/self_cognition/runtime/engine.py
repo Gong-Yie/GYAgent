@@ -86,6 +86,8 @@ class CognitionEngine:
             if context is not None and context.is_cancelled:
                 raise RunCancelledError("run cancelled before cognitive module")
             try:
+                if context is not None and not binding.deterministic:
+                    context.record_model_call()
                 contributions = self._invoke(module, request)
                 if context is not None and context.is_cancelled:
                     raise RunCancelledError(

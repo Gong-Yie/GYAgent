@@ -30,6 +30,7 @@ from self_cognition.core.processing import (
     RUN_CANCELLED,
     ProcessingStatus,
 )
+from self_cognition.core.runs import RunKind, RunStatus
 from self_cognition.core.protocols import (
     EvidenceRepository,
     EventStore,
@@ -39,6 +40,7 @@ from self_cognition.core.protocols import (
 from self_cognition.core.state import SubjectState
 from self_cognition.runtime.engine import CognitionEngine, raise_terminal_failure
 from self_cognition.runtime.run_context import RunContext
+from self_cognition.runtime.run_service import RunLifecycle
 from self_cognition.memory.service import MemoryEncodingService
 
 
@@ -54,6 +56,7 @@ class ProcessEventService:
         engine: CognitionEngine,
         process_journal: ProcessJournal | None = None,
         memory_encoding: MemoryEncodingService | None = None,
+        run_lifecycle: RunLifecycle | None = None,
     ) -> None:
         self._event_store = event_store
         self._evidence_repository = evidence_repository
@@ -61,6 +64,7 @@ class ProcessEventService:
         self._engine = engine
         self._process_journal = process_journal
         self._memory_encoding = memory_encoding
+        self._run_lifecycle = run_lifecycle
 
     def process(
         self,
@@ -135,11 +139,27 @@ class ProcessEventService:
         *,
         event_is_claimed: bool,
     ) -> ProcessEventResult:
-        if context.is_cancelled:
-            return self._cancelled_result(context, event_saved=False, state=None)
-
         event_saved = False
         old_state: SubjectState | None = None
+        run_record = (
+            self._run_lifecycle.begin(
+                context,
+                RunKind.COGNITIVE_CYCLE,
+                event.subject,
+                input_event_ids=(event.event_id,),
+            )
+            if self._run_lifecycle is not None
+            else None
+        )
+        if context.is_cancelled:
+            if run_record is not None:
+                self._run_lifecycle.finish(
+                    context,
+                    run_record,
+                    RunStatus.CANCELLED,
+                    reason=context.cancellation_reason or "cancelled",
+                )
+            return self._cancelled_result(context, event_saved=False, state=None)
         try:
             processing_record = None
             if event_is_claimed:
@@ -163,6 +183,13 @@ class ProcessEventService:
                     mind_id=subject.mind.mind_id,
                     subject_kind=subject.subject.kind,
                 )
+            if run_record is not None:
+                run_record = self._run_lifecycle.checkpoint(
+                    context,
+                    run_record,
+                    "input_loaded",
+                    state_version=old_state.version,
+                )
 
             if (
                 processing_record is not None
@@ -174,6 +201,13 @@ class ProcessEventService:
                     context.run_id,
                     context.clock.now(),
                 )
+                if run_record is not None:
+                    self._run_lifecycle.finish(
+                        context,
+                        run_record,
+                        RunStatus.COMPLETED,
+                        state_version=old_state.version,
+                    )
                 return ProcessEventResult(
                     status=ProcessEventStatus.SUCCEEDED,
                     run_id=context.run_id,
@@ -188,6 +222,15 @@ class ProcessEventService:
                 processing_record is not None
                 and processing_record.status is ProcessingStatus.FAILED
             ):
+                if run_record is not None:
+                    self._run_lifecycle.finish(
+                        context,
+                        run_record,
+                        RunStatus.FAILED,
+                        reason=processing_record.error_type or "processing failed",
+                        error_type=processing_record.error_type,
+                        state_version=old_state.version,
+                    )
                 return ProcessEventResult(
                     status=ProcessEventStatus.FAILED,
                     run_id=context.run_id,
@@ -204,6 +247,14 @@ class ProcessEventService:
             if context.is_cancelled:
                 if not event_is_claimed:
                     self.finalize_cancellation(recorded_event, context)
+                if run_record is not None:
+                    self._run_lifecycle.finish(
+                        context,
+                        run_record,
+                        RunStatus.CANCELLED,
+                        reason=context.cancellation_reason or "cancelled",
+                        state_version=old_state.version,
+                    )
                 return self._cancelled_result(context, event_saved, old_state)
 
             payload = recorded_event.payload
@@ -236,10 +287,25 @@ class ProcessEventService:
                     context,
                     new_results,
                 )
+            if run_record is not None:
+                run_record = self._run_lifecycle.checkpoint(
+                    context,
+                    run_record,
+                    "cognition_results_persisted",
+                    state_version=old_state.version,
+                )
             raise_terminal_failure(cognition_results)
             if context.is_cancelled:
                 if not event_is_claimed:
                     self.finalize_cancellation(recorded_event, context)
+                if run_record is not None:
+                    self._run_lifecycle.finish(
+                        context,
+                        run_record,
+                        RunStatus.CANCELLED,
+                        reason=context.cancellation_reason or "cancelled",
+                        state_version=old_state.version,
+                    )
                 return self._cancelled_result(context, event_saved, old_state)
 
             new_state = self._engine.reduce(
@@ -250,6 +316,14 @@ class ProcessEventService:
             if context.is_cancelled:
                 if not event_is_claimed:
                     self.finalize_cancellation(recorded_event, context)
+                if run_record is not None:
+                    self._run_lifecycle.finish(
+                        context,
+                        run_record,
+                        RunStatus.CANCELLED,
+                        reason=context.cancellation_reason or "cancelled",
+                        state_version=old_state.version,
+                    )
                 return self._cancelled_result(context, event_saved, old_state)
 
             state_changed = new_state.version != old_state.version
@@ -285,6 +359,19 @@ class ProcessEventService:
                     run_id=context.run_id,
                     updated_at=reduction_event.recorded_at,
                 )
+            if run_record is not None:
+                run_record = self._run_lifecycle.checkpoint(
+                    context,
+                    run_record,
+                    "state_reduced",
+                    state_version=new_state.version,
+                )
+                self._run_lifecycle.finish(
+                    context,
+                    run_record,
+                    RunStatus.COMPLETED,
+                    state_version=new_state.version,
+                )
 
             return ProcessEventResult(
                 status=ProcessEventStatus.SUCCEEDED,
@@ -301,6 +388,14 @@ class ProcessEventService:
             self._append_emitted_events(context)
             if event_saved and not event_is_claimed:
                 self.finalize_cancellation(recorded_event, context)
+            if run_record is not None:
+                self._run_lifecycle.finish(
+                    context,
+                    run_record,
+                    RunStatus.CANCELLED,
+                    reason=context.cancellation_reason or "cancelled",
+                    state_version=(old_state.version if old_state is not None else None),
+                )
             return self._cancelled_result(context, event_saved, old_state)
         except Exception as error:
             self._append_emitted_events(context)
@@ -313,6 +408,15 @@ class ProcessEventService:
                     )
                 except Exception:
                     logger.exception("failed to persist processing failure event")
+            if run_record is not None:
+                self._run_lifecycle.finish(
+                    context,
+                    run_record,
+                    RunStatus.FAILED,
+                    reason=self._error_type(error),
+                    error_type=self._error_type(error),
+                    state_version=(old_state.version if old_state is not None else None),
+                )
             return ProcessEventResult(
                 status=ProcessEventStatus.FAILED,
                 run_id=context.run_id,

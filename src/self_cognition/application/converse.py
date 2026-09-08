@@ -179,6 +179,7 @@ class ConverseService:
             cause = self._event(origin, origin, "dialogue.started", payload, context)
             self._persist(cause)
             stage = "generate"
+            context.record_model_call()
             output = self._model.generate(workspace, context)
             self._save_output(cause, output, context)
             self._ensure_active(context)
@@ -189,6 +190,7 @@ class ConverseService:
             if not is_plain_smalltalk(workspace.task_context, draft):
                 stage = "grounding"
                 self._require_live(workspace)
+                context.record_model_call()
                 output = self._model.review(workspace, draft, context)
                 self._save_output(cause, output, context)
                 self._ensure_active(context)

@@ -16,6 +16,7 @@ from self_cognition.core.processing import (
     ProcessingRecord,
     ProcessingStatus,
 )
+from self_cognition.core.runs import RunRecord
 from self_cognition.core.scopes import MindScope, SubjectScope
 from self_cognition.core.state import SubjectState
 
@@ -210,3 +211,14 @@ class ProcessJournal(Protocol):
     def dead_letters(self) -> tuple[ProcessingRecord, ...]: ...
 
     def forget(self, event_ids: tuple[UUID, ...]) -> None: ...
+
+
+@runtime_checkable
+class RunRepository(Protocol):
+    def get(self, run_id: UUID) -> RunRecord | None: ...
+
+    def save(self, record: RunRecord) -> RunRecord: ...
+
+    def read_by_parent(self, parent_run_id: UUID) -> tuple[RunRecord, ...]: ...
+
+    def read_incomplete(self) -> tuple[RunRecord, ...]: ...

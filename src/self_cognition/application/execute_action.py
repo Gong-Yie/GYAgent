@@ -42,6 +42,7 @@ from self_cognition.core.plans import (
     PlanRevisedPayload,
     PlanStep,
 )
+from self_cognition.core.runs import RunKind, RunStatus
 from self_cognition.core.protocols import EventStore, StateRepository
 from self_cognition.core.scopes import DataScope, DisclosureScope, SubjectScope
 from self_cognition.core.workspace import (
@@ -53,6 +54,7 @@ from self_cognition.core.workspace import (
 )
 from self_cognition.executive.action.validator import ActionValidator
 from self_cognition.runtime.run_context import RunContext
+from self_cognition.runtime.run_service import RunLifecycle
 from self_cognition.tools.registry import CapabilityRegistry
 from self_cognition.tools.executor import ToolExecutor
 
@@ -71,6 +73,7 @@ class ActionService:
         model: ActionModel,
         executor: ToolExecutor | None = None,
         validator: ActionValidator | None = None,
+        run_lifecycle: RunLifecycle | None = None,
     ) -> None:
         self._events = event_store
         self._states = state_repository
@@ -80,6 +83,7 @@ class ActionService:
         self._model = model
         self._executor = executor
         self._validator = validator or ActionValidator()
+        self._run_lifecycle = run_lifecycle
         self._lock = RLock()
 
     def execute(
@@ -92,6 +96,16 @@ class ActionService:
         if self._executor is None:
             raise ContractValidationError("no tool executor is configured")
         with self._lock:
+            run_record = (
+                self._run_lifecycle.begin(
+                    context,
+                    RunKind.ACTION,
+                    action.owner,
+                    input_event_ids=(action.action_id,),
+                )
+                if self._run_lifecycle is not None
+                else None
+            )
             existing = next(
                 (
                     event.payload.result
@@ -102,9 +116,61 @@ class ActionService:
                 None,
             )
             if existing is not None:
-                return self.record_result(action.owner, existing, context)
+                result = self.record_result(action.owner, existing, context)
+                if run_record is not None:
+                    run_record = self._run_lifecycle.checkpoint(
+                        context,
+                        run_record,
+                        "action.result_recorded",
+                        action_id=action.action_id,
+                        result_event_id=result.event_id,
+                    )
+                    self._run_lifecycle.finish(
+                        context,
+                        run_record,
+                        RunStatus.COMPLETED,
+                    )
+                return result
+            if run_record is not None and run_record.status.is_terminal:
+                return ActionServiceResult(
+                    ProcessEventStatus.FAILED,
+                    context.run_id,
+                    context.correlation_id,
+                    error_type="InterruptedAction",
+                    reused=True,
+                )
+            if run_record is not None:
+                run_record = self._run_lifecycle.checkpoint(
+                    context,
+                    run_record,
+                    "action.execute_started",
+                    action_id=action.action_id,
+                )
+            context.record_tool_call()
             result = self._executor.execute(action, decision, context)
-            return self.record_result(action.owner, result, context)
+            recorded = self.record_result(action.owner, result, context)
+            if run_record is not None:
+                run_record = self._run_lifecycle.checkpoint(
+                    context,
+                    run_record,
+                    "action.result_recorded",
+                    action_id=action.action_id,
+                    result_event_id=recorded.event_id,
+                )
+                status = {
+                    ActionResultStatus.CANCELLED: RunStatus.CANCELLED,
+                    ActionResultStatus.TIMED_OUT: RunStatus.TIMED_OUT,
+                    ActionResultStatus.FAILED: RunStatus.FAILED,
+                    ActionResultStatus.PARTIAL: RunStatus.FAILED,
+                }.get(result.status, RunStatus.COMPLETED)
+                self._run_lifecycle.finish(
+                    context,
+                    run_record,
+                    status,
+                    reason=result.summary if status is not RunStatus.COMPLETED else None,
+                    error_type=result.error_type,
+                )
+            return recorded
 
     def prepare(
         self,
@@ -287,6 +353,7 @@ class ActionService:
         stage = "propose"
         current = started
         try:
+            context.record_model_call()
             output = self._model.propose(
                 progress.plan,
                 step_progress.step,
@@ -328,6 +395,7 @@ class ActionService:
             )
             self._events.append(current)
             stage = "decide"
+            context.record_model_call()
             output = self._model.decide(action, workspace, context)
             output_event = self._save_output(current, output, context)
             self._ensure_active(context)

@@ -206,6 +206,7 @@ class PursueGoalService:
             if progress.status.value != "blocked":
                 raise ContractValidationError("replanning requires a blocked plan")
             workspace = self._build_workspace(subject, goal, context)
+            context.record_model_call()
             output = self._planner.replan(
                 goal,
                 plan,
@@ -341,6 +342,7 @@ class PursueGoalService:
             event_id=uuid5(request.request_id, "planning.started"),
         )
         self._events.append(context_event)
+        context.record_model_call()
         output = self._planner.create(
             request.goal,
             request.budget,

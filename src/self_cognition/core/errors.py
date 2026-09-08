@@ -22,6 +22,10 @@ class RunCancelledError(CognitionError):
     """Raised internally when a run is cancelled at a safe boundary."""
 
 
+class RunBudgetExceededError(CognitionError):
+    """Raised when a run exceeds its declared resource budget."""
+
+
 class SerializationError(CognitionError):
     """Raised when persisted data cannot be decoded or encoded safely."""
 

@@ -46,6 +46,7 @@ from self_cognition.core.protocols import (
     DeletionRepository,
     EventStore,
     MemoryRepository,
+    RunRepository,
     StateRepository,
 )
 from self_cognition.core.workspace import WorkspaceBuilder
@@ -77,11 +78,16 @@ from self_cognition.infrastructure.persistence.file_processing_recovery import (
 from self_cognition.infrastructure.persistence.file_state_repository import (
     FileStateRepository,
 )
+from self_cognition.infrastructure.persistence.file_run_repository import (
+    FileRunRepository,
+)
 from self_cognition.infrastructure.persistence.in_memory_evidence_repository import (
     InMemoryEvidenceRepository,
 )
 from self_cognition.runtime.engine import CognitionEngine
 from self_cognition.runtime.event_bus import SingleMachineEventBus
+from self_cognition.runtime.recovery import RunRecoveryService
+from self_cognition.runtime.run_service import RunLifecycle
 from self_cognition.lifecycle import ApplicationLifecycle
 from self_cognition.memory.encoder import StateChangeMemoryEncoder
 from self_cognition.memory.behavior import (
@@ -132,6 +138,9 @@ class ApplicationContainer:
     planning_model: PlanningModel
     action_model: ActionModel
     tool_executor: ToolExecutor | None
+    run_repository: RunRepository
+    run_lifecycle: RunLifecycle
+    run_recovery: RunRecoveryService
     lifecycle: ApplicationLifecycle
 
 
@@ -156,6 +165,10 @@ def build_container(
         layout.event_log,
         layout.deletions / "event_tombstones.jsonl",
     )
+    run_repository = FileRunRepository(layout.runs)
+    run_lifecycle = RunLifecycle(run_repository)
+    run_recovery = RunRecoveryService(run_repository, event_store)
+    run_recovery.recover(SYSTEM_CLOCK.now())
     evidence_repository = InMemoryEvidenceRepository()
     state_repository = FileStateRepository(layout.states)
     memory_repository = FileMemoryRepository(
@@ -195,6 +208,7 @@ def build_container(
         engine=engine,
         process_journal=process_journal,
         memory_encoding=memory_encoding,
+        run_lifecycle=run_lifecycle,
     )
     event_bus = SingleMachineEventBus(
         event_store,
@@ -248,6 +262,7 @@ def build_container(
         capability_registry,
         selected_action_model,
         executor=tool_executor,
+        run_lifecycle=run_lifecycle,
     )
     lifecycle = ApplicationLifecycle(
         event_bus,
@@ -292,6 +307,9 @@ def build_container(
         planning_model=selected_planning_model,
         action_model=selected_action_model,
         tool_executor=tool_executor,
+        run_repository=run_repository,
+        run_lifecycle=run_lifecycle,
+        run_recovery=run_recovery,
         lifecycle=lifecycle,
     )
 
