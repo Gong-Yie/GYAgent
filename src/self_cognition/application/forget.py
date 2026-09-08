@@ -2,6 +2,7 @@ from datetime import datetime
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from self_cognition.application.replay import ReplayService
+from self_cognition.core.actions import ActionContextPayload
 from self_cognition.core.deletions import (
     DeletionImpact,
     InvalidatedModuleResult,
@@ -168,7 +169,12 @@ class ForgetService:
                 payload = event.payload
                 dependent = event.causation_id in deleted
                 if isinstance(
-                    payload, (DialogueContextPayload, AssistantMessagePayload)
+                    payload,
+                    (
+                        DialogueContextPayload,
+                        AssistantMessagePayload,
+                        ActionContextPayload,
+                    ),
                 ):
                     dependent = dependent or any(
                         ref.evidence_id in deleted for ref in payload.evidence_refs

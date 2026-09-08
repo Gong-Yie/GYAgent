@@ -4,6 +4,7 @@ from threading import RLock
 from pathlib import Path
 from uuid import UUID
 
+from self_cognition.core.actions import action_dependency_ids
 from self_cognition.core.errors import MalformedSerializedDataError
 from self_cognition.core.events import EventEnvelope
 from self_cognition.core.dialogue import dialogue_dependency_ids
@@ -38,7 +39,8 @@ class FileEventStore:
                 or event.event_id in self._tombstones
                 or bool(
                     (
-                        dialogue_dependency_ids(event)
+                        action_dependency_ids(event)
+                        | dialogue_dependency_ids(event)
                         | planning_dependency_ids(event)
                     )
                     & self._tombstones
@@ -64,7 +66,9 @@ class FileEventStore:
                 if event.event_id not in self._event_ids
                 and event.event_id not in self._tombstones
                 and not (
-                    dialogue_dependency_ids(event) | planning_dependency_ids(event)
+                    action_dependency_ids(event)
+                    | dialogue_dependency_ids(event)
+                    | planning_dependency_ids(event)
                 )
                 & self._tombstones
             )

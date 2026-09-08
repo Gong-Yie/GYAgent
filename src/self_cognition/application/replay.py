@@ -31,6 +31,11 @@ DERIVED_EVENT_TYPES = frozenset(
         "planning.failed",
         "plan.revised",
         "plan.step_result",
+        "action.started",
+        "action.proposed",
+        "action.decided",
+        "action.failed",
+        "action.result",
     }
 )
 

@@ -2,6 +2,7 @@ from dataclasses import dataclass, replace
 from threading import RLock
 from uuid import UUID
 
+from self_cognition.core.actions import ExpectedSideEffect, ToolDescriptor
 from self_cognition.core.errors import ContractValidationError
 from self_cognition.core.events import EventEnvelope, EventSource
 from self_cognition.core.identity import (
@@ -22,6 +23,10 @@ class CapabilityRegistration:
     permission: CapabilityPermission
     enabled: bool = True
     reason: str | None = None
+    description: str | None = None
+    input_schema: dict[str, object] | None = None
+    output_schema: dict[str, object] | None = None
+    expected_side_effects: tuple[ExpectedSideEffect, ...] = ()
 
     def to_record(self) -> CapabilityRecord:
         return CapabilityRecord(
@@ -33,6 +38,24 @@ class CapabilityRegistration:
             reason=self.reason,
         )
 
+    def to_tool_descriptor(self) -> ToolDescriptor | None:
+        if self.kind is not CapabilityKind.TOOL:
+            return None
+        empty_schema = {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        }
+        return ToolDescriptor(
+            self.capability_id,
+            self.name,
+            self.description or self.name,
+            self.input_schema or empty_schema,
+            self.output_schema or empty_schema,
+            self.expected_side_effects,
+        )
+
 
 class CapabilityRegistry:
     def __init__(
@@ -40,6 +63,7 @@ class CapabilityRegistry:
         registrations: tuple[CapabilityRegistration, ...] = (),
     ) -> None:
         self._records: dict[str, CapabilityRecord] = {}
+        self._tool_descriptors: dict[str, ToolDescriptor] = {}
         self._lock = RLock()
         for registration in registrations:
             self.register(registration)
@@ -54,12 +78,22 @@ class CapabilityRegistry:
                     f"capability is already registered: {record.capability_id}"
                 )
             self._records[record.capability_id] = record
+            descriptor = registration.to_tool_descriptor()
+            if descriptor is not None:
+                self._tool_descriptors[record.capability_id] = descriptor
 
     def registrations(self) -> tuple[CapabilityRecord, ...]:
         with self._lock:
             return tuple(
                 self._records[capability_id]
                 for capability_id in sorted(self._records)
+            )
+
+    def tool_descriptors(self) -> tuple[ToolDescriptor, ...]:
+        with self._lock:
+            return tuple(
+                self._tool_descriptors[tool_id]
+                for tool_id in sorted(self._tool_descriptors)
             )
 
     def registration_event(

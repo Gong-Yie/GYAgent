@@ -3,6 +3,23 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
+from self_cognition.core.actions import (
+    ActionContextPayload,
+    ActionDecisionPayload,
+    ActionFailurePayload,
+    ActionProposedPayload,
+    ActionResultPayload,
+    action_decision_from_dict,
+    action_decision_to_dict,
+    action_request_from_dict,
+    action_request_to_dict,
+    action_result_from_dict,
+    action_result_to_dict,
+    proposal_request_from_dict,
+    proposal_request_to_dict,
+    tool_descriptor_from_dict,
+    tool_descriptor_to_dict,
+)
 from self_cognition.core.contributions import (
     CognitiveContribution,
     CognitionType,
@@ -524,8 +541,37 @@ def _event_payload_to_dict(
         | PlanRevisedPayload
         | PlanStepResultPayload
         | GoalStatusChangedPayload
+        | ActionContextPayload
+        | ActionProposedPayload
+        | ActionDecisionPayload
+        | ActionFailurePayload
+        | ActionResultPayload
     ),
 ) -> dict[str, object]:
+    if isinstance(payload, ActionContextPayload):
+        return {
+            "request": proposal_request_to_dict(payload.request),
+            "workspace_json": payload.workspace_json,
+            "evidence_refs": [
+                _evidence_ref_to_dict(ref) for ref in payload.evidence_refs
+            ],
+            "tools": [tool_descriptor_to_dict(tool) for tool in payload.tools],
+        }
+    if isinstance(payload, ActionProposedPayload):
+        return {"request": action_request_to_dict(payload.request)}
+    if isinstance(payload, ActionDecisionPayload):
+        return {
+            "request": action_request_to_dict(payload.request),
+            "decision": action_decision_to_dict(payload.decision),
+        }
+    if isinstance(payload, ActionFailurePayload):
+        return {
+            "proposal_request_id": str(payload.proposal_request_id),
+            "stage": payload.stage,
+            "error_type": payload.error_type,
+        }
+    if isinstance(payload, ActionResultPayload):
+        return {"result": action_result_to_dict(payload.result)}
     if isinstance(
         payload,
         (DialogueContextPayload, AssistantMessagePayload, DialogueFailurePayload),
@@ -708,8 +754,60 @@ def _event_payload_from_dict(
     | PlanRevisedPayload
     | PlanStepResultPayload
     | GoalStatusChangedPayload
+    | ActionContextPayload
+    | ActionProposedPayload
+    | ActionDecisionPayload
+    | ActionFailurePayload
+    | ActionResultPayload
 ):
     values = _require_object(value, path)
+    if event_type == "action.started":
+        _require_keys(
+            values,
+            {"request", "workspace_json", "evidence_refs", "tools"},
+            path,
+        )
+        refs = values["evidence_refs"]
+        tools = values["tools"]
+        if not isinstance(refs, list) or not isinstance(tools, list):
+            raise MalformedSerializedDataError(
+                "action evidence and tools must be arrays"
+            )
+        return ActionContextPayload(
+            proposal_request_from_dict(values["request"]),
+            _require_non_blank_string(
+                values["workspace_json"], f"{path}.workspace_json"
+            ),
+            tuple(_evidence_ref_from_dict(ref, path) for ref in refs),
+            tuple(tool_descriptor_from_dict(tool) for tool in tools),
+        )
+    if event_type == "action.proposed":
+        _require_keys(values, {"request"}, path)
+        return ActionProposedPayload(action_request_from_dict(values["request"]))
+    if event_type == "action.decided":
+        _require_keys(values, {"request", "decision"}, path)
+        return ActionDecisionPayload(
+            action_request_from_dict(values["request"]),
+            action_decision_from_dict(values["decision"]),
+        )
+    if event_type == "action.failed":
+        _require_keys(
+            values,
+            {"proposal_request_id", "stage", "error_type"},
+            path,
+        )
+        return ActionFailurePayload(
+            _require_uuid(
+                values["proposal_request_id"], f"{path}.proposal_request_id"
+            ),
+            _require_non_blank_string(values["stage"], f"{path}.stage"),
+            _require_non_blank_string(
+                values["error_type"], f"{path}.error_type"
+            ),
+        )
+    if event_type == "action.result":
+        _require_keys(values, {"result"}, path)
+        return ActionResultPayload(action_result_from_dict(values["result"]))
     if event_type in {"dialogue.started", "assistant.message", "dialogue.failed"}:
         common = {"request_event_id", "recipient", "old_version", "new_version"}
         extra = {

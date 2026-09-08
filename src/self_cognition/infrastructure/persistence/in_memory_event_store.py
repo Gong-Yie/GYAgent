@@ -1,6 +1,7 @@
 from uuid import UUID
 from threading import RLock
 
+from self_cognition.core.actions import action_dependency_ids
 from self_cognition.core.events import EventEnvelope
 from self_cognition.core.dialogue import dialogue_dependency_ids
 from self_cognition.core.plans import planning_dependency_ids
@@ -24,7 +25,9 @@ class InMemoryEventStore:
                 if event.event_id not in self._event_ids
                 and event.event_id not in self._tombstones
                 and not (
-                    dialogue_dependency_ids(event) | planning_dependency_ids(event)
+                    action_dependency_ids(event)
+                    | dialogue_dependency_ids(event)
+                    | planning_dependency_ids(event)
                 )
                 & self._tombstones
             )

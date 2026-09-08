@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from enum import Enum
 from uuid import UUID
 
+from self_cognition.core.actions import ActionDecision, ActionRequest, ActionResult
 from self_cognition.core.state import SubjectState
 from self_cognition.core.dialogue import DialogueDraft
 from self_cognition.core.evidence import EvidenceRef
@@ -52,6 +53,19 @@ class PursueGoalResult:
     goal: GoalRecord | None = None
     plan: Plan | None = None
     progress: PlanProgress | None = None
+    event_id: UUID | None = None
+    error_type: str | None = None
+    reused: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ActionServiceResult:
+    status: ProcessEventStatus
+    run_id: UUID
+    correlation_id: UUID
+    request: ActionRequest | None = None
+    decision: ActionDecision | None = None
+    result: ActionResult | None = None
     event_id: UUID | None = None
     error_type: str | None = None
     reused: bool = False

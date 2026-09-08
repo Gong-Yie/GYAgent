@@ -5,6 +5,13 @@ from datetime import datetime
 from enum import Enum
 from uuid import UUID
 
+from self_cognition.core.actions import (
+    ActionContextPayload,
+    ActionDecisionPayload,
+    ActionFailurePayload,
+    ActionProposedPayload,
+    ActionResultPayload,
+)
 from self_cognition.core.errors import ContractValidationError
 from self_cognition.core.dialogue import (
     AssistantMessagePayload,
@@ -281,6 +288,11 @@ EventPayload = (
     | PlanRevisedPayload
     | PlanStepResultPayload
     | GoalStatusChangedPayload
+    | ActionContextPayload
+    | ActionProposedPayload
+    | ActionDecisionPayload
+    | ActionFailurePayload
+    | ActionResultPayload
 )
 
 
@@ -330,6 +342,11 @@ class EventEnvelope:
             "plan.revised": PlanRevisedPayload,
             "plan.step_result": PlanStepResultPayload,
             "goal.status_changed": GoalStatusChangedPayload,
+            "action.started": ActionContextPayload,
+            "action.proposed": ActionProposedPayload,
+            "action.decided": ActionDecisionPayload,
+            "action.failed": ActionFailurePayload,
+            "action.result": ActionResultPayload,
         }
         payload_type = expected_payloads.get(self.event_type)
         if payload_type is None or not isinstance(self.payload, payload_type):
@@ -471,6 +488,17 @@ class EventEnvelope:
             ),
         ):
             self._validate_planning_control({EventSource.SYSTEM})
+        elif isinstance(
+            self.payload,
+            (
+                ActionContextPayload,
+                ActionProposedPayload,
+                ActionDecisionPayload,
+                ActionFailurePayload,
+                ActionResultPayload,
+            ),
+        ):
+            self._validate_action_control()
         elif self.event_type == "self_model.observation":
             self._validate_self_model_source()
         elif self.event_type == "capability.observed":
@@ -537,6 +565,40 @@ class EventEnvelope:
             raise ContractValidationError("planning events must target a mind subject")
         if self.source not in sources or self.actor is not None:
             raise ContractValidationError("planning event source is invalid")
+
+    def _validate_action_control(self) -> None:
+        if self.subject.subject.kind is not SubjectKind.MIND:
+            raise ContractValidationError("action events must target a mind subject")
+        if self.actor is not None or self.causation_id is None:
+            raise ContractValidationError(
+                "action events require system causation without a domain actor"
+            )
+        if isinstance(self.payload, ActionResultPayload):
+            if self.payload.result.owner != self.subject:
+                raise ContractValidationError(
+                    "action result owner must match its event subject"
+                )
+            if self.source not in {EventSource.SYSTEM, EventSource.TOOL}:
+                raise ContractValidationError("action result source is invalid")
+            return
+        if self.source is not EventSource.SYSTEM:
+            raise ContractValidationError("action control event source is invalid")
+        if isinstance(self.payload, ActionFailurePayload):
+            return
+        request = self.payload.request
+        if request.owner != self.subject:
+            raise ContractValidationError("action event owner does not match")
+        if isinstance(self.payload, ActionContextPayload):
+            _require_non_blank(self.payload.workspace_json, "action workspace")
+            if any(
+                ref.scope.owner.mind != self.subject.mind
+                for ref in self.payload.evidence_refs
+            ):
+                raise ContractValidationError("action evidence cannot cross minds")
+        elif isinstance(self.payload, ActionDecisionPayload) and (
+            self.payload.decision.action_id != self.payload.request.action_id
+        ):
+            raise ContractValidationError("action decision does not match its request")
 
     def _validate_self_model_source(self) -> None:
         if self.subject.subject.kind is not SubjectKind.MIND:

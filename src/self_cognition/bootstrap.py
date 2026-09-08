@@ -1,9 +1,11 @@
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from self_cognition.application.execute_action import ActionService
 from self_cognition.application.process_event import ProcessEventService
 from self_cognition.application.converse import ConverseService
 from self_cognition.application.pursue_goal import PursueGoalService
+from self_cognition.core.actions import ActionModel
 from self_cognition.core.dialogue import DialogueModel
 from self_cognition.core.plans import PlanningModel
 from self_cognition.executive.dialogue.fake import RuleDialogueAdapter
@@ -55,6 +57,7 @@ from self_cognition.cognition.semantic.preference_extractor import (
     PreferenceExtractor,
 )
 from self_cognition.executive.dialogue.rule_based import RuleBasedDialogueModel
+from self_cognition.executive.action.fake import RuleActionModel
 from self_cognition.executive.planning.fake import RulePlanningModel
 from self_cognition.executive.planning.validator import PlanValidator
 from self_cognition.infrastructure.persistence.file_event_store import FileEventStore
@@ -98,6 +101,7 @@ from self_cognition.settings import (
 )
 from self_cognition.core.time import SYSTEM_CLOCK
 from self_cognition.tools.registry import CapabilityRegistry
+from self_cognition.tools.executor import FileReadToolExecutor, ToolExecutor
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +122,7 @@ class ApplicationContainer:
     process_event: ProcessEventService
     converse: ConverseService
     pursue_goal: PursueGoalService
+    action: ActionService
     event_bus: SingleMachineEventBus
     replay: ReplayService
     workspace_builder: WorkspaceBuilder
@@ -125,6 +130,8 @@ class ApplicationContainer:
     module_registry: CognitiveModuleRegistry
     capability_registry: CapabilityRegistry
     planning_model: PlanningModel
+    action_model: ActionModel
+    tool_executor: ToolExecutor | None
     lifecycle: ApplicationLifecycle
 
 
@@ -136,6 +143,8 @@ def build_container(
     module_registrations: tuple[ModuleRegistration, ...] | None = None,
     dialogue_model: RuleBasedDialogueModel | DialogueModel | None = None,
     planning_model: PlanningModel | None = None,
+    action_model: ActionModel | None = None,
+    tool_executor: ToolExecutor | None = None,
     metacognition_model: CognitionModel | None = None,
     affect_model: CognitionModel | None = None,
 ) -> ApplicationContainer:
@@ -218,6 +227,8 @@ def build_container(
         ),
     )
     capability_registry = CapabilityRegistry()
+    if isinstance(tool_executor, FileReadToolExecutor):
+        capability_registry.register(tool_executor.registration)
     selected_planning_model = planning_model or RulePlanningModel()
     pursue_goal = PursueGoalService(
         process_event,
@@ -227,6 +238,16 @@ def build_container(
         selected_planning_model,
         capability_registry,
         PlanValidator(),
+    )
+    selected_action_model = action_model or RuleActionModel()
+    action = ActionService(
+        event_store,
+        state_repository,
+        workspace_builder,
+        pursue_goal,
+        capability_registry,
+        selected_action_model,
+        executor=tool_executor,
     )
     lifecycle = ApplicationLifecycle(
         event_bus,
@@ -241,6 +262,7 @@ def build_container(
             state_repository,
             selected_dialogue_model,
             selected_planning_model,
+            selected_action_model,
         ),
     )
     return ApplicationContainer(
@@ -260,6 +282,7 @@ def build_container(
         process_event=process_event,
         converse=converse,
         pursue_goal=pursue_goal,
+        action=action,
         event_bus=event_bus,
         replay=replay,
         workspace_builder=workspace_builder,
@@ -267,6 +290,8 @@ def build_container(
         module_registry=module_registry,
         capability_registry=capability_registry,
         planning_model=selected_planning_model,
+        action_model=selected_action_model,
+        tool_executor=tool_executor,
         lifecycle=lifecycle,
     )
 
