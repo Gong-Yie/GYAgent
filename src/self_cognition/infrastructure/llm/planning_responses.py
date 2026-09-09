@@ -81,10 +81,15 @@ class OpenAIResponsesPlanningModel:
         cls,
         api_key: str,
         model: str,
+        *,
+        base_url: str | None = None,
     ) -> "OpenAIResponsesPlanningModel":
         from openai import OpenAI
 
-        return cls(OpenAI(api_key=api_key, max_retries=0), model)
+        return cls(
+            OpenAI(api_key=api_key, base_url=base_url, max_retries=0),
+            model,
+        )
 
     def close(self) -> None:
         self._client.close()

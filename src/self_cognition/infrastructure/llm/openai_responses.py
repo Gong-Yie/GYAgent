@@ -91,6 +91,7 @@ class OpenAIResponsesCognitionModel:
         api_key: str,
         model: str,
         *,
+        base_url: str | None = None,
         timeout_seconds: float = 30.0,
         max_output_tokens: int = 512,
         assessment_kind: str = "semantic",
@@ -98,7 +99,7 @@ class OpenAIResponsesCognitionModel:
         from openai import OpenAI
 
         return cls(
-            OpenAI(api_key=api_key, max_retries=0),
+            OpenAI(api_key=api_key, base_url=base_url, max_retries=0),
             model,
             timeout_seconds=timeout_seconds,
             max_output_tokens=max_output_tokens,

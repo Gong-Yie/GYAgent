@@ -105,6 +105,18 @@ from self_cognition.infrastructure.llm.router import (
     RoutedDialogueModel,
     RoutedPlanningModel,
 )
+from self_cognition.infrastructure.llm.action_responses import (
+    OpenAIResponsesActionModel,
+)
+from self_cognition.infrastructure.llm.dialogue_responses import (
+    OpenAIResponsesDialogueModel,
+)
+from self_cognition.infrastructure.llm.openai_responses import (
+    OpenAIResponsesCognitionModel,
+)
+from self_cognition.infrastructure.llm.planning_responses import (
+    OpenAIResponsesPlanningModel,
+)
 from self_cognition.executive.orchestrator import ExecutiveOrchestrator
 from self_cognition.lifecycle import ApplicationLifecycle
 from self_cognition.memory.encoder import StateChangeMemoryEncoder
@@ -187,6 +199,36 @@ def build_container(
     resolved_settings = settings or load_settings(dotenv_path)
     if data_dir is not None:
         resolved_settings = replace(resolved_settings, data_dir=Path(data_dir))
+    secret_source = DotenvSecretSource(Path(dotenv_path))
+    openai_configuration = _openai_configuration(secret_source)
+    if openai_configuration is not None:
+        api_key, model, base_url = openai_configuration
+        if dialogue_model is None:
+            dialogue_model = OpenAIResponsesDialogueModel.from_api_key(
+                api_key, model, base_url=base_url
+            )
+        if planning_model is None:
+            planning_model = OpenAIResponsesPlanningModel.from_api_key(
+                api_key, model, base_url=base_url
+            )
+        if action_model is None:
+            action_model = OpenAIResponsesActionModel.from_api_key(
+                api_key, model, base_url=base_url
+            )
+        if module_registrations is None and metacognition_model is None:
+            metacognition_model = OpenAIResponsesCognitionModel.from_api_key(
+                api_key,
+                model,
+                base_url=base_url,
+                assessment_kind="metacognition",
+            )
+        if module_registrations is None and affect_model is None:
+            affect_model = OpenAIResponsesCognitionModel.from_api_key(
+                api_key,
+                model,
+                base_url=base_url,
+                assessment_kind="affect",
+            )
     layout = FileDataLayout(resolved_settings.data_dir).ensure()
     metrics = MetricsRegistry()
     traces = TraceRecorder()
@@ -364,7 +406,7 @@ def build_container(
     )
     return ApplicationContainer(
         settings=resolved_settings,
-        secret_source=DotenvSecretSource(Path(dotenv_path)),
+        secret_source=secret_source,
         event_store=event_store,
         evidence_repository=evidence_repository,
         state_repository=state_repository,
@@ -508,3 +550,23 @@ def _module_registry(
         for registration in registrations
     )
     return CognitiveModuleRegistry(configured)
+
+
+def _openai_configuration(
+    secret_source: DotenvSecretSource,
+) -> tuple[str, str, str | None] | None:
+    api_key, model, base_url = tuple(
+        (value.strip() or None) if value is not None else None
+        for value in (
+            secret_source.get("OPENAI_API_KEY"),
+            secret_source.get("OPENAI_MODEL"),
+            secret_source.get("OPENAI_BASE_URL"),
+        )
+    )
+    if api_key is None and model is None and base_url is None:
+        return None
+    if api_key is None or model is None:
+        raise ValueError(
+            "OPENAI_API_KEY and OPENAI_MODEL must be configured together"
+        )
+    return api_key, model, base_url

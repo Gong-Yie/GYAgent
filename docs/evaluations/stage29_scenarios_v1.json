@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "suite_id": "stage29-deterministic",
+  "suite_version": "1.0.0",
+  "automated_cases": [
+    {
+      "id": "memory-recall-and-decay",
+      "capability": "memory_recall",
+      "node_id": "test/test_memory_behavior.py::test_recall_uses_cues_and_read_time_decay_without_mutating_record"
+    },
+    {
+      "id": "memory-spacing",
+      "capability": "memory_spacing",
+      "node_id": "test/test_memory_behavior.py::test_spaced_access_reinforces_more_than_same_session_accesses"
+    },
+    {
+      "id": "memory-interference",
+      "capability": "memory_interference",
+      "node_id": "test/test_memory_behavior.py::test_interference_is_explained_and_does_not_delete_candidates"
+    },
+    {
+      "id": "memory-consolidation",
+      "capability": "memory_consolidation",
+      "node_id": "test/test_memory_behavior.py::test_consolidation_requires_spaced_evidence_and_is_idempotent"
+    },
+    {
+      "id": "memory-correction",
+      "capability": "memory_correction",
+      "node_id": "test/test_memory_lifecycle.py::test_correction_supersedes_old_memory_through_the_contribution_chain"
+    },
+    {
+      "id": "memory-deletion",
+      "capability": "memory_deletion",
+      "node_id": "test/test_memory_lifecycle.py::test_dry_run_then_delete_removes_authority_and_rebuilds_state"
+    },
+    {
+      "id": "identity-stability",
+      "capability": "identity_stability",
+      "node_id": "test/test_self_model.py::test_mind_identity_requires_confirmation_or_system_prior"
+    },
+    {
+      "id": "capability-honesty",
+      "capability": "capability_honesty",
+      "node_id": "test/test_self_model.py::test_self_model_exposes_structured_limitations_goals_and_answers"
+    },
+    {
+      "id": "unknown-expression",
+      "capability": "unknown_expression",
+      "node_id": "test/test_stage20.py::test_smalltalk_and_unknown_have_bounded_calls"
+    },
+    {
+      "id": "relationship-ownership",
+      "capability": "relationship_ownership",
+      "node_id": "test/test_stage18.py::test_group_message_stays_with_original_speaker_and_mind_isolation"
+    },
+    {
+      "id": "grounded-dialogue",
+      "capability": "grounding",
+      "node_id": "test/test_stage20.py::test_low_confidence_cannot_be_relabelled_as_certain"
+    },
+    {
+      "id": "planning-lifecycle",
+      "capability": "planning",
+      "node_id": "test/test_stage21.py::test_create_progress_pause_resume_and_complete"
+    },
+    {
+      "id": "action-judgment",
+      "capability": "action_judgment",
+      "node_id": "test/test_stage22.py::test_action_proposal_and_all_llm_decisions_are_audited"
+    },
+    {
+      "id": "dual-loop-timing",
+      "capability": "dual_loop_timing",
+      "node_id": "test/test_stage25.py::test_fast_loop_rejects_history_and_slow_loop_does_not_block"
+    },
+    {
+      "id": "proactive-lifecycle-and-deduplication",
+      "capability": "proactive_behavior",
+      "node_id": "test/test_stage25.py::test_intention_lifecycle_and_event_round_trip"
+    },
+    {
+      "id": "emotion-and-motive",
+      "capability": "emotion_stance",
+      "node_id": "test/test_stage25.py::test_emotion_decay_and_motive_competition_are_deterministic"
+    },
+    {
+      "id": "proactive-silence-control",
+      "capability": "proactive_silence",
+      "node_id": "test/test_stage26.py::test_retention_and_proactive_controls_propagate"
+    },
+    {
+      "id": "no-rolling-context-continuity",
+      "capability": "state_continuity",
+      "node_id": "test/test_stage29.py::test_restart_preserves_state_and_intention_without_rolling_context"
+    },
+    {
+      "id": "legacy-workspace-and-answer-event",
+      "capability": "compatibility",
+      "node_id": "test/test_stage29.py::test_legacy_workspace_and_stage20_answer_event_remain_readable"
+    }
+  ],
+  "deferred_cases": [
+    {
+      "id": "proactive-real-world-trigger-matrix",
+      "reason": "Requires goal-stall, commitment, relationship, emotion and environment trigger fixtures beyond the current explicit motive API."
+    },
+    {
+      "id": "user-refutation-quality",
+      "reason": "Requires a real dialogue model judgment; deterministic lifecycle checks do not prove response quality."
+    },
+    {
+      "id": "presence-and-comfort",
+      "reason": "Presence, interaction comfort and willingness to return require blinded human evaluation."
+    },
+    {
+      "id": "live-model-quality",
+      "reason": "Live model evaluation must separately record model version, parameters, cost and failures."
+    }
+  ]
+}
