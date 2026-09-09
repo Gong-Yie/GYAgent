@@ -5,6 +5,7 @@ from self_cognition.application.execute_action import ActionService
 from self_cognition.application.process_event import ProcessEventService
 from self_cognition.application.converse import ConverseService
 from self_cognition.application.pursue_goal import PursueGoalService
+from self_cognition.application.proactive import ProactiveIntentionService
 from self_cognition.core.actions import ActionModel
 from self_cognition.core.dialogue import DialogueModel
 from self_cognition.core.plans import PlanningModel
@@ -88,6 +89,8 @@ from self_cognition.runtime.engine import CognitionEngine
 from self_cognition.runtime.event_bus import SingleMachineEventBus
 from self_cognition.runtime.recovery import RunRecoveryService
 from self_cognition.runtime.run_service import RunLifecycle
+from self_cognition.runtime.scheduler import DualLoopScheduler
+from self_cognition.executive.orchestrator import ExecutiveOrchestrator
 from self_cognition.lifecycle import ApplicationLifecycle
 from self_cognition.memory.encoder import StateChangeMemoryEncoder
 from self_cognition.memory.behavior import (
@@ -141,6 +144,9 @@ class ApplicationContainer:
     run_repository: RunRepository
     run_lifecycle: RunLifecycle
     run_recovery: RunRecoveryService
+    proactive: ProactiveIntentionService
+    scheduler: DualLoopScheduler
+    orchestrator: ExecutiveOrchestrator
     lifecycle: ApplicationLifecycle
 
 
@@ -210,6 +216,13 @@ def build_container(
         memory_encoding=memory_encoding,
         run_lifecycle=run_lifecycle,
     )
+    proactive = ProactiveIntentionService(event_store, evidence_repository)
+    scheduler = DualLoopScheduler(process_event.process)
+    orchestrator = ExecutiveOrchestrator(
+        state_repository,
+        proactive,
+        scheduler,
+    )
     event_bus = SingleMachineEventBus(
         event_store,
         process_journal,
@@ -263,6 +276,7 @@ def build_container(
         selected_action_model,
         executor=tool_executor,
         run_lifecycle=run_lifecycle,
+        process_event=process_event,
     )
     lifecycle = ApplicationLifecycle(
         event_bus,
@@ -278,6 +292,7 @@ def build_container(
             selected_dialogue_model,
             selected_planning_model,
             selected_action_model,
+            scheduler,
         ),
     )
     return ApplicationContainer(
@@ -310,6 +325,9 @@ def build_container(
         run_repository=run_repository,
         run_lifecycle=run_lifecycle,
         run_recovery=run_recovery,
+        proactive=proactive,
+        scheduler=scheduler,
+        orchestrator=orchestrator,
         lifecycle=lifecycle,
     )
 

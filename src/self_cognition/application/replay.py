@@ -36,6 +36,10 @@ DERIVED_EVENT_TYPES = frozenset(
         "action.decided",
         "action.failed",
         "action.result",
+        "motive.formed",
+        "proactive.intention",
+        "behavior.decided",
+        "behavior.mode_switched",
     }
 )
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from threading import RLock
 from uuid import UUID, uuid5
 
@@ -36,6 +37,7 @@ from self_cognition.core.errors import (
 )
 from self_cognition.core.evidence import EvidenceRef
 from self_cognition.core.events import EventEnvelope, EventSource
+from self_cognition.core.ids import new_run_id
 from self_cognition.core.identity import CapabilityKind
 from self_cognition.core.plans import (
     GoalPlannedPayload,
@@ -74,6 +76,7 @@ class ActionService:
         executor: ToolExecutor | None = None,
         validator: ActionValidator | None = None,
         run_lifecycle: RunLifecycle | None = None,
+        process_event: "ProcessEventService | None" = None,
     ) -> None:
         self._events = event_store
         self._states = state_repository
@@ -84,6 +87,7 @@ class ActionService:
         self._executor = executor
         self._validator = validator or ActionValidator()
         self._run_lifecycle = run_lifecycle
+        self._process_event = process_event
         self._lock = RLock()
 
     def execute(
@@ -263,6 +267,7 @@ class ActionService:
                 source=source,
             )
             self._events.append(event)
+            self._reflow_result(event, context)
             return ActionServiceResult(
                 ProcessEventStatus.SUCCEEDED,
                 context.run_id,
@@ -272,6 +277,18 @@ class ActionService:
                 result,
                 event.event_id,
             )
+
+    def _reflow_result(self, event: EventEnvelope, context: RunContext) -> None:
+        if self._process_event is None:
+            return
+        child = context.child(new_run_id(), correlation_id=context.correlation_id)
+        try:
+            self._process_event.process(
+                replace(event, run_id=None, correlation_id=None),
+                child,
+            )
+        except Exception:
+            logger.exception("action result cognition reflow failed")
 
     def _prepare(
         self,

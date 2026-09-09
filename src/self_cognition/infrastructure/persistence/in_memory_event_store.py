@@ -5,6 +5,7 @@ from self_cognition.core.actions import action_dependency_ids
 from self_cognition.core.events import EventEnvelope
 from self_cognition.core.dialogue import dialogue_dependency_ids
 from self_cognition.core.plans import planning_dependency_ids
+from self_cognition.core.proactivity import proactive_dependency_ids
 from self_cognition.core.scopes import MindScope, SubjectScope
 
 class InMemoryEventStore:
@@ -28,6 +29,7 @@ class InMemoryEventStore:
                     action_dependency_ids(event)
                     | dialogue_dependency_ids(event)
                     | planning_dependency_ids(event)
+                    | proactive_dependency_ids(event)
                 )
                 & self._tombstones
             )

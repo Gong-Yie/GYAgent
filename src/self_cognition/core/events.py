@@ -30,6 +30,11 @@ from self_cognition.core.identity import (
 )
 from self_cognition.core.ids import new_event_id
 from self_cognition.core.metacognition import ConflictReview
+from self_cognition.core.proactivity import (
+    BehavioralDecision,
+    Motive,
+    ProactiveIntention,
+)
 from self_cognition.core.plans import (
     GoalPlannedPayload,
     GoalPlanningRequest,
@@ -267,6 +272,49 @@ class ProcessingFailurePayload:
         _require_non_blank(self.error_type, "error_type")
 
 
+@dataclass(frozen=True, slots=True)
+class MotiveFormedPayload:
+    motive: Motive
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.motive, Motive):
+            raise ContractValidationError("motive payload is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class ProactiveIntentionPayload:
+    intention: ProactiveIntention
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.intention, ProactiveIntention):
+            raise ContractValidationError("proactive intention payload is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class BehavioralDecisionPayload:
+    intention_id: UUID
+    decision: BehavioralDecision
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.intention_id, UUID):
+            raise ContractValidationError("behavior intention ID must be a UUID")
+        if not isinstance(self.decision, BehavioralDecision):
+            raise ContractValidationError("behavioral decision payload is invalid")
+        if self.decision.intention_id != self.intention_id:
+            raise ContractValidationError("behavior decision intention does not match")
+
+
+@dataclass(frozen=True, slots=True)
+class BehaviorModePayload:
+    mode: str
+    state_version: int
+
+    def __post_init__(self) -> None:
+        _require_non_blank(self.mode, "behavior mode")
+        if type(self.state_version) is not int or self.state_version < 0:
+            raise ContractValidationError("behavior mode state version is invalid")
+
+
 EventPayload = (
     UserMessagePayload
     | DialogueContextPayload
@@ -281,6 +329,10 @@ EventPayload = (
     | CognitionModuleResultPayload
     | StateReductionPayload
     | ProcessingFailurePayload
+    | MotiveFormedPayload
+    | ProactiveIntentionPayload
+    | BehavioralDecisionPayload
+    | BehaviorModePayload
     | GoalRequestedPayload
     | PlanningContextPayload
     | GoalPlannedPayload
@@ -347,6 +399,10 @@ class EventEnvelope:
             "action.decided": ActionDecisionPayload,
             "action.failed": ActionFailurePayload,
             "action.result": ActionResultPayload,
+            "motive.formed": MotiveFormedPayload,
+            "proactive.intention": ProactiveIntentionPayload,
+            "behavior.decided": BehavioralDecisionPayload,
+            "behavior.mode_switched": BehaviorModePayload,
         }
         payload_type = expected_payloads.get(self.event_type)
         if payload_type is None or not isinstance(self.payload, payload_type):
@@ -499,6 +555,16 @@ class EventEnvelope:
             ),
         ):
             self._validate_action_control()
+        elif isinstance(
+            self.payload,
+            (
+                MotiveFormedPayload,
+                ProactiveIntentionPayload,
+                BehavioralDecisionPayload,
+                BehaviorModePayload,
+            ),
+        ):
+            self._validate_proactive_control()
         elif self.event_type == "self_model.observation":
             self._validate_self_model_source()
         elif self.event_type == "capability.observed":
@@ -599,6 +665,30 @@ class EventEnvelope:
             self.payload.decision.action_id != self.payload.request.action_id
         ):
             raise ContractValidationError("action decision does not match its request")
+
+    def _validate_proactive_control(self) -> None:
+        if self.subject.subject.kind is not SubjectKind.MIND:
+            raise ContractValidationError("proactive events must target a mind subject")
+        if self.source is not EventSource.SYSTEM or self.actor is not None:
+            raise ContractValidationError("proactive events must be system events")
+        payload = self.payload
+        if isinstance(payload, MotiveFormedPayload):
+            if payload.motive.subject_id not in {
+                self.subject.mind.mind_id,
+                self.subject.subject.subject_id,
+            }:
+                raise ContractValidationError("motive subject does not match event mind")
+        elif isinstance(payload, ProactiveIntentionPayload):
+            if payload.intention.target.mind != self.subject.mind:
+                raise ContractValidationError("intention target crosses minds")
+        elif isinstance(payload, BehavioralDecisionPayload):
+            if self.causation_id is None:
+                raise ContractValidationError("behavior decision requires causation")
+            if any(
+                ref.scope.owner.mind != self.subject.mind
+                for ref in payload.decision.evidence_refs
+            ):
+                raise ContractValidationError("behavior evidence crosses minds")
 
     def _validate_self_model_source(self) -> None:
         if self.subject.subject.kind is not SubjectKind.MIND:
@@ -849,6 +939,117 @@ class EventEnvelope:
             source=EventSource.SYSTEM,
             scope=cause.scope,
             causation_id=cause.event_id,
+            correlation_id=correlation_id,
+            run_id=run_id,
+        )
+
+    @classmethod
+    def motive_formed(
+        cls,
+        subject: SubjectScope,
+        motive: Motive,
+        *,
+        clock: Clock = SYSTEM_CLOCK,
+        correlation_id: UUID | None = None,
+        run_id: UUID | None = None,
+    ) -> "EventEnvelope":
+        if subject.subject.kind is not SubjectKind.MIND:
+            raise ContractValidationError("motive events must target a mind")
+        now = clock.now()
+        return cls(
+            motive.motive_id,
+            "motive.formed",
+            None,
+            subject,
+            MotiveFormedPayload(motive),
+            now,
+            now,
+            EventSource.SYSTEM,
+            DataScope(subject, DisclosureScope.MIND),
+            causation_id=(motive.source_event_ids[0] if motive.source_event_ids else None),
+            correlation_id=correlation_id,
+            run_id=run_id,
+        )
+
+    @classmethod
+    def proactive_intention(
+        cls,
+        intention: ProactiveIntention,
+        *,
+        clock: Clock = SYSTEM_CLOCK,
+        correlation_id: UUID | None = None,
+        run_id: UUID | None = None,
+    ) -> "EventEnvelope":
+        subject = SubjectScope.for_mind(intention.target.mind.mind_id)
+        now = clock.now()
+        return cls(
+            intention.intention_id,
+            "proactive.intention",
+            None,
+            subject,
+            ProactiveIntentionPayload(intention),
+            now,
+            now,
+            EventSource.SYSTEM,
+            DataScope(subject, DisclosureScope.MIND),
+            causation_id=intention.motive_id,
+            correlation_id=correlation_id,
+            run_id=run_id,
+        )
+
+    @classmethod
+    def behavior_decided(
+        cls,
+        subject: SubjectScope,
+        decision: BehavioralDecision,
+        *,
+        clock: Clock = SYSTEM_CLOCK,
+        correlation_id: UUID | None = None,
+        run_id: UUID | None = None,
+    ) -> "EventEnvelope":
+        if subject.subject.kind is not SubjectKind.MIND:
+            raise ContractValidationError("behavior events must target a mind")
+        now = clock.now()
+        return cls(
+            decision.decision_id,
+            "behavior.decided",
+            None,
+            subject,
+            BehavioralDecisionPayload(decision.intention_id, decision),
+            now,
+            now,
+            EventSource.SYSTEM,
+            DataScope(subject, DisclosureScope.MIND),
+            causation_id=decision.intention_id,
+            correlation_id=correlation_id,
+            run_id=run_id,
+        )
+
+    @classmethod
+    def behavior_mode_switched(
+        cls,
+        subject: SubjectScope,
+        mode: str,
+        *,
+        state_version: int = 0,
+        clock: Clock = SYSTEM_CLOCK,
+        event_id: UUID | None = None,
+        correlation_id: UUID | None = None,
+        run_id: UUID | None = None,
+    ) -> "EventEnvelope":
+        if subject.subject.kind is not SubjectKind.MIND:
+            raise ContractValidationError("behavior mode events must target a mind")
+        now = clock.now()
+        return cls(
+            event_id or new_event_id(),
+            "behavior.mode_switched",
+            None,
+            subject,
+            BehaviorModePayload(mode, state_version),
+            now,
+            now,
+            EventSource.SYSTEM,
+            DataScope(subject, DisclosureScope.MIND),
             correlation_id=correlation_id,
             run_id=run_id,
         )

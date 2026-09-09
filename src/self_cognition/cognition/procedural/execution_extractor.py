@@ -1,4 +1,5 @@
 from self_cognition.core.cognition import CognitionRequest
+from self_cognition.core.actions import ActionResultPayload
 from self_cognition.core.contributions import CognitiveContribution, CognitionType
 from self_cognition.core.evidence import EvidenceRef
 from self_cognition.core.events import (
@@ -16,7 +17,7 @@ MODULE_VERSION = "1"
 class ProceduralExecutionExtractor:
     """Records only tool-backed execution outcomes as procedural memory."""
 
-    subscriptions = frozenset({"capability.observed"})
+    subscriptions = frozenset({"capability.observed", "action.result"})
     module_id = SOURCE_MODULE
     module_version = MODULE_VERSION
     deterministic = True
@@ -34,6 +35,33 @@ class ProceduralExecutionExtractor:
         if event.source is not EventSource.TOOL:
             return ()
         payload = event.payload
+        if event.event_type == "action.result":
+            if not isinstance(payload, ActionResultPayload):
+                return ()
+            result = payload.result
+            target_field = f"procedural.action.{result.action_id}"
+            return (
+                CognitiveContribution.set_from_event(
+                    event,
+                    contribution_id=contribution_id(
+                        event.event_id,
+                        SOURCE_MODULE,
+                        target_field,
+                    ),
+                    target_field=target_field,
+                    cognition_type=CognitionType.FACT,
+                    value={
+                        "action_id": str(result.action_id),
+                        "outcome": result.status.value,
+                        "summary": result.summary,
+                        "error_type": result.error_type,
+                    },
+                    confidence=1.0,
+                    evidence_refs=(EvidenceRef.for_event(event),),
+                    source_module=SOURCE_MODULE,
+                    module_version=MODULE_VERSION,
+                ),
+            )
         if not isinstance(payload, CapabilityObservationPayload):
             return ()
         capability = payload.capability
