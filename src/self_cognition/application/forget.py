@@ -14,9 +14,12 @@ from self_cognition.core.deletions import (
 from self_cognition.core.evidence import EvidenceSourceKind
 from self_cognition.core.dialogue import AssistantMessagePayload, DialogueContextPayload
 from self_cognition.core.events import (
+    BehavioralDecisionPayload,
     CognitionModuleResultPayload,
     EventEnvelope,
     EventSource,
+    MotiveFormedPayload,
+    ProactiveIntentionPayload,
     StateReductionPayload,
 )
 from self_cognition.core.evidence import EvidenceRef
@@ -30,6 +33,8 @@ from self_cognition.core.protocols import (
     MemoryRepository,
     ProcessJournal,
     StateRepository,
+    GovernanceRepository,
+    RunRepository,
 )
 
 
@@ -43,6 +48,8 @@ class ForgetService:
         deletion_repository: DeletionRepository,
         replay: ReplayService,
         process_journal: ProcessJournal | None = None,
+        run_repository: RunRepository | None = None,
+        governance: GovernanceRepository | None = None,
     ) -> None:
         self._event_store = event_store
         self._evidence_repository = evidence_repository
@@ -51,6 +58,8 @@ class ForgetService:
         self._deletion_repository = deletion_repository
         self._replay = replay
         self._process_journal = process_journal
+        self._run_repository = run_repository
+        self._governance = governance
 
     def dry_run(
         self,
@@ -111,6 +120,8 @@ class ForgetService:
                 self._memory_repository.delete(impact.subject, impact.memory_ids)
                 if self._process_journal is not None:
                     self._process_journal.forget(impact.event_ids)
+                if self._run_repository is not None:
+                    self._run_repository.forget(impact.event_ids)
             self._record_invalidated_results(executing)
             for impact in executing.effective_impacts:
                 subject = impact.subject
@@ -131,6 +142,21 @@ class ForgetService:
             raise
         completed = executing.with_status(DeletionStatus.COMPLETED, now)
         self._deletion_repository.save(completed)
+        if self._governance is not None:
+            from self_cognition.core.governance import AuditAction, AuditRecord
+
+            self._governance.append_audit(
+                AuditRecord(
+                    uuid5(NAMESPACE_URL, f"audit:delete:{completed.plan_id}"),
+                    AuditAction.DELETE,
+                    completed.selector.subject,
+                    completed.selector.subject,
+                    "deletion_plan",
+                    str(completed.plan_id),
+                    now,
+                    {"event_count": len(completed.event_ids), "memory_count": len(completed.memory_ids)},
+                )
+            )
         return completed
 
     def recover(self, *, now: datetime) -> tuple[DeletionPlan, ...]:
@@ -165,9 +191,27 @@ class ForgetService:
                 and isinstance(event.payload, CognitionModuleResultPayload)
                 for contribution in event.payload.contributions
             }
+            removed_motives = {
+                event.payload.motive.motive_id
+                for event in events
+                if event.event_id in deleted
+                and isinstance(event.payload, MotiveFormedPayload)
+            }
+            removed_intentions = {
+                event.payload.intention.intention_id
+                for event in events
+                if event.event_id in deleted
+                and isinstance(event.payload, ProactiveIntentionPayload)
+            }
             for event in events:
                 payload = event.payload
                 dependent = event.causation_id in deleted
+                if isinstance(payload, ProactiveIntentionPayload):
+                    dependent = dependent or payload.intention.motive_id in removed_motives
+                if isinstance(payload, BehavioralDecisionPayload):
+                    dependent = dependent or payload.intention_id in removed_intentions
+                if isinstance(payload, MotiveFormedPayload):
+                    dependent = dependent or bool(set(payload.motive.source_event_ids) & deleted)
                 if isinstance(
                     payload,
                     (

@@ -68,6 +68,10 @@ class FileDataLayout:
         return self.root / "logs"
 
     @property
+    def governance(self) -> Path:
+        return self.root / "governance"
+
+    @property
     def event_log(self) -> Path:
         """Return the new event path while reading the pre-layout legacy path."""
 
@@ -99,4 +103,5 @@ class FileDataLayout:
             self.blobs,
             self.cache,
             self.logs,
+            self.governance,
         )

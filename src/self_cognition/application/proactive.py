@@ -19,7 +19,7 @@ from self_cognition.core.proactivity import (
     IntentionStatus,
     ProactiveIntention,
 )
-from self_cognition.core.protocols import EvidenceRepository, EventStore
+from self_cognition.core.protocols import EvidenceRepository, EventStore, GovernanceRepository
 from self_cognition.core.scopes import SubjectScope
 from self_cognition.core.time import Clock, SYSTEM_CLOCK
 from self_cognition.runtime.run_context import RunContext
@@ -40,9 +40,11 @@ class ProactiveIntentionService:
         self,
         event_store: EventStore,
         evidence_repository: EvidenceRepository | None = None,
+        governance: GovernanceRepository | None = None,
     ) -> None:
         self._events = event_store
         self._evidence = evidence_repository
+        self._governance = governance
 
     def form_motive(
         self,
@@ -174,6 +176,10 @@ class ProactiveIntentionService:
         }
         result = []
         for intention_id, intention in intentions.items():
+            if self._governance is not None:
+                controls = self._governance.load_controls(subject)
+                if not controls.allows_proactive(intention.motive.kind):
+                    continue
             if intention.is_expired(as_of):
                 continue
             decision = decisions.get(intention_id)

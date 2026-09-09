@@ -3,6 +3,7 @@ from uuid import UUID
 
 from self_cognition.core.errors import ContractValidationError
 from self_cognition.core.runs import RunRecord
+from self_cognition.core.scopes import SubjectScope
 
 
 class InMemoryRunRepository:
@@ -38,3 +39,14 @@ class InMemoryRunRepository:
                 for record in self._records.values()
                 if not record.status.is_terminal
             )
+
+    def read_by_subject(self, subject: SubjectScope) -> tuple[RunRecord, ...]:
+        with self._lock:
+            return tuple(record for record in self._records.values() if record.subject == subject)
+
+    def forget(self, event_ids: tuple[UUID, ...]) -> None:
+        targets = set(event_ids)
+        with self._lock:
+            for run_id, record in tuple(self._records.items()):
+                if targets.intersection(record.input_event_ids):
+                    del self._records[run_id]

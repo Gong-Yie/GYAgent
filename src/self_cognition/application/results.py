@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from enum import Enum
 from uuid import UUID
+from pathlib import Path
 
 from self_cognition.core.actions import ActionDecision, ActionRequest, ActionResult
 from self_cognition.core.state import SubjectState
@@ -8,6 +9,7 @@ from self_cognition.core.dialogue import DialogueDraft
 from self_cognition.core.evidence import EvidenceRef
 from self_cognition.core.identity import GoalRecord
 from self_cognition.core.plans import Plan, PlanProgress
+from self_cognition.core.scopes import SubjectScope
 
 class ProcessEventStatus(str, Enum):
     SUCCEEDED = "succeeded"
@@ -69,3 +71,11 @@ class ActionServiceResult:
     event_id: UUID | None = None
     error_type: str | None = None
     reused: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ExportResult:
+    export_id: UUID
+    subject: SubjectScope
+    path: Path
+    counts: dict[str, int]

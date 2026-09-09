@@ -6,6 +6,7 @@ from self_cognition.application.process_event import ProcessEventService
 from self_cognition.application.converse import ConverseService
 from self_cognition.application.pursue_goal import PursueGoalService
 from self_cognition.application.proactive import ProactiveIntentionService
+from self_cognition.application.user_control import UserControlService
 from self_cognition.core.actions import ActionModel
 from self_cognition.core.dialogue import DialogueModel
 from self_cognition.core.plans import PlanningModel
@@ -48,6 +49,7 @@ from self_cognition.core.protocols import (
     EventStore,
     MemoryRepository,
     RunRepository,
+    GovernanceRepository,
     StateRepository,
 )
 from self_cognition.core.workspace import WorkspaceBuilder
@@ -81,6 +83,9 @@ from self_cognition.infrastructure.persistence.file_state_repository import (
 )
 from self_cognition.infrastructure.persistence.file_run_repository import (
     FileRunRepository,
+)
+from self_cognition.infrastructure.persistence.file_governance_repository import (
+    FileGovernanceRepository,
 )
 from self_cognition.infrastructure.persistence.in_memory_evidence_repository import (
     InMemoryEvidenceRepository,
@@ -148,6 +153,8 @@ class ApplicationContainer:
     scheduler: DualLoopScheduler
     orchestrator: ExecutiveOrchestrator
     lifecycle: ApplicationLifecycle
+    user_control: UserControlService
+    governance: GovernanceRepository
 
 
 def build_container(
@@ -172,6 +179,7 @@ def build_container(
         layout.deletions / "event_tombstones.jsonl",
     )
     run_repository = FileRunRepository(layout.runs)
+    governance = FileGovernanceRepository(layout.governance)
     run_lifecycle = RunLifecycle(run_repository)
     run_recovery = RunRecoveryService(run_repository, event_store)
     run_recovery.recover(SYSTEM_CLOCK.now())
@@ -216,7 +224,7 @@ def build_container(
         memory_encoding=memory_encoding,
         run_lifecycle=run_lifecycle,
     )
-    proactive = ProactiveIntentionService(event_store, evidence_repository)
+    proactive = ProactiveIntentionService(event_store, evidence_repository, governance)
     scheduler = DualLoopScheduler(process_event.process)
     orchestrator = ExecutiveOrchestrator(
         state_repository,
@@ -238,6 +246,8 @@ def build_container(
         deletion_repository=deletion_repository,
         replay=replay,
         process_journal=process_journal,
+        run_repository=run_repository,
+        governance=governance,
     )
     forget.recover(now=SYSTEM_CLOCK.now())
     selected_dialogue_model = dialogue_model or RuleBasedDialogueModel()
@@ -277,6 +287,19 @@ def build_container(
         executor=tool_executor,
         run_lifecycle=run_lifecycle,
         process_event=process_event,
+    )
+    user_control = UserControlService(
+        event_store,
+        evidence_repository,
+        state_repository,
+        memory_repository,
+        run_repository,
+        governance,
+        forget,
+        process_event,
+        module_registry,
+        proactive,
+        layout.exports,
     )
     lifecycle = ApplicationLifecycle(
         event_bus,
@@ -329,6 +352,8 @@ def build_container(
         scheduler=scheduler,
         orchestrator=orchestrator,
         lifecycle=lifecycle,
+        user_control=user_control,
+        governance=governance,
     )
 
 
