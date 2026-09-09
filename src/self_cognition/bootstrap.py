@@ -95,6 +95,16 @@ from self_cognition.runtime.event_bus import SingleMachineEventBus
 from self_cognition.runtime.recovery import RunRecoveryService
 from self_cognition.runtime.run_service import RunLifecycle
 from self_cognition.runtime.scheduler import DualLoopScheduler
+from self_cognition.runtime.health import HealthService
+from self_cognition.observability.metrics import MetricsRegistry
+from self_cognition.observability.tracing import TraceRecorder
+from self_cognition.infrastructure.llm.router import (
+    ModelRegistration,
+    ModelRouter,
+    RoutedActionModel,
+    RoutedDialogueModel,
+    RoutedPlanningModel,
+)
 from self_cognition.executive.orchestrator import ExecutiveOrchestrator
 from self_cognition.lifecycle import ApplicationLifecycle
 from self_cognition.memory.encoder import StateChangeMemoryEncoder
@@ -155,6 +165,10 @@ class ApplicationContainer:
     lifecycle: ApplicationLifecycle
     user_control: UserControlService
     governance: GovernanceRepository
+    metrics: MetricsRegistry
+    traces: TraceRecorder
+    model_router: ModelRouter
+    health: HealthService
 
 
 def build_container(
@@ -174,6 +188,8 @@ def build_container(
     if data_dir is not None:
         resolved_settings = replace(resolved_settings, data_dir=Path(data_dir))
     layout = FileDataLayout(resolved_settings.data_dir).ensure()
+    metrics = MetricsRegistry()
+    traces = TraceRecorder()
     event_store = FileEventStore(
         layout.event_log,
         layout.deletions / "event_tombstones.jsonl",
@@ -223,9 +239,19 @@ def build_container(
         process_journal=process_journal,
         memory_encoding=memory_encoding,
         run_lifecycle=run_lifecycle,
+        metrics=metrics,
     )
-    proactive = ProactiveIntentionService(event_store, evidence_repository, governance)
-    scheduler = DualLoopScheduler(process_event.process)
+    proactive = ProactiveIntentionService(
+        event_store,
+        evidence_repository,
+        governance,
+        metrics,
+    )
+    scheduler = DualLoopScheduler(
+        process_event.process,
+        metrics=metrics,
+        traces=traces,
+    )
     orchestrator = ExecutiveOrchestrator(
         state_repository,
         proactive,
@@ -236,6 +262,7 @@ def build_container(
         process_journal,
         process_event,
         max_workers=resolved_settings.worker_max_workers,
+        metrics=metrics,
     )
     replay = ReplayService(event_store=event_store, engine=engine)
     forget = ForgetService(
@@ -251,39 +278,47 @@ def build_container(
     )
     forget.recover(now=SYSTEM_CLOCK.now())
     selected_dialogue_model = dialogue_model or RuleBasedDialogueModel()
+    dialogue_adapter = (
+        RuleDialogueAdapter(selected_dialogue_model)
+        if isinstance(selected_dialogue_model, RuleBasedDialogueModel)
+        else selected_dialogue_model
+    )
+    capability_registry = CapabilityRegistry()
+    if isinstance(tool_executor, FileReadToolExecutor):
+        capability_registry.register(tool_executor.registration)
+    selected_planning_model = planning_model or RulePlanningModel()
+    selected_action_model = action_model or RuleActionModel()
+    model_router = ModelRouter(
+        (
+            ModelRegistration("dialogue", "dialogue-default", dialogue_adapter),
+            ModelRegistration("planning", "planning-default", selected_planning_model),
+            ModelRegistration("action", "action-default", selected_action_model),
+        )
+    )
     converse = ConverseService(
         process_event,
         event_store,
         evidence_repository,
         state_repository,
         workspace_builder,
-        (
-            RuleDialogueAdapter(selected_dialogue_model)
-            if isinstance(selected_dialogue_model, RuleBasedDialogueModel)
-            else selected_dialogue_model
-        ),
+        RoutedDialogueModel(model_router),
     )
-    capability_registry = CapabilityRegistry()
-    if isinstance(tool_executor, FileReadToolExecutor):
-        capability_registry.register(tool_executor.registration)
-    selected_planning_model = planning_model or RulePlanningModel()
     pursue_goal = PursueGoalService(
         process_event,
         event_store,
         state_repository,
         workspace_builder,
-        selected_planning_model,
+        RoutedPlanningModel(model_router),
         capability_registry,
         PlanValidator(),
     )
-    selected_action_model = action_model or RuleActionModel()
     action = ActionService(
         event_store,
         state_repository,
         workspace_builder,
         pursue_goal,
         capability_registry,
-        selected_action_model,
+        RoutedActionModel(model_router),
         executor=tool_executor,
         run_lifecycle=run_lifecycle,
         process_event=process_event,
@@ -317,6 +352,14 @@ def build_container(
             selected_action_model,
             scheduler,
         ),
+    )
+    health = HealthService(
+        data_dir=layout.root,
+        event_bus=event_bus,
+        lifecycle=lifecycle,
+        module_registry=module_registry,
+        capability_registry=capability_registry,
+        model_router=model_router,
     )
     return ApplicationContainer(
         settings=resolved_settings,
@@ -354,6 +397,10 @@ def build_container(
         lifecycle=lifecycle,
         user_control=user_control,
         governance=governance,
+        metrics=metrics,
+        traces=traces,
+        model_router=model_router,
+        health=health,
     )
 
 

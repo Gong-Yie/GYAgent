@@ -30,6 +30,7 @@ class RunLifecycle:
         *,
         input_event_ids: tuple[UUID, ...] = (),
         state_version: int | None = None,
+        wake_reason: str | None = None,
     ) -> RunRecord:
         with self._lock:
             record = self._repository.get(context.run_id)
@@ -53,6 +54,7 @@ class RunLifecycle:
                 usage=context.usage,
                 input_event_ids=input_event_ids,
                 state_version=state_version,
+                wake_reason=wake_reason,
             )
             self._contexts[context.run_id] = context
             return self._repository.save(record)
@@ -106,6 +108,8 @@ class RunLifecycle:
                 updated_at=context.clock.now(),
                 status=status,
                 usage=context.usage,
+                latency_seconds=(context.clock.now() - record.started_at).total_seconds(),
+                result=status.value,
                 state_version=(
                     state_version if state_version is not None else record.state_version
                 ),
@@ -141,4 +145,3 @@ class RunLifecycle:
             raise ContractValidationError("run context does not match stored run")
         if record.correlation_id != context.correlation_id:
             raise ContractValidationError("run correlation ID does not match")
-

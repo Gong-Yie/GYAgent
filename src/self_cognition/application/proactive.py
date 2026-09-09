@@ -23,6 +23,7 @@ from self_cognition.core.protocols import EvidenceRepository, EventStore, Govern
 from self_cognition.core.scopes import SubjectScope
 from self_cognition.core.time import Clock, SYSTEM_CLOCK
 from self_cognition.runtime.run_context import RunContext
+from self_cognition.observability.metrics import MetricsRegistry
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,10 +42,12 @@ class ProactiveIntentionService:
         event_store: EventStore,
         evidence_repository: EvidenceRepository | None = None,
         governance: GovernanceRepository | None = None,
+        metrics: MetricsRegistry | None = None,
     ) -> None:
         self._events = event_store
         self._evidence = evidence_repository
         self._governance = governance
+        self._metrics = metrics
 
     def form_motive(
         self,
@@ -63,6 +66,8 @@ class ProactiveIntentionService:
             run_id=context.run_id if context else None,
         )
         self._append(event)
+        if self._metrics is not None:
+            self._metrics.increment("proactive.motives.formed")
         return event
 
     def propose(
@@ -103,6 +108,8 @@ class ProactiveIntentionService:
             run_id=context.run_id if context else None,
         )
         self._append(event)
+        if self._metrics is not None:
+            self._metrics.increment("proactive.intentions.proposed")
         return event
 
     def decide(
@@ -156,6 +163,8 @@ class ProactiveIntentionService:
             run_id=context.run_id if context else None,
         )
         self._append(event)
+        if self._metrics is not None:
+            self._metrics.increment("proactive.decisions.recorded")
         return ProactiveDecisionResult(intention, decision, event)
 
     def active(
@@ -196,6 +205,9 @@ class ProactiveIntentionService:
                 result.append(intention)
                 continue
             result.append(intention)
+        if self._metrics is not None:
+            self._metrics.set_gauge("proactive.active", float(len(result)))
+            self._metrics.increment("proactive.silenced", len(intentions) - len(result))
         return tuple(sorted(result, key=lambda item: (-item.priority, item.intention_id.int)))
 
     def compete(

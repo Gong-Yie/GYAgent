@@ -108,6 +108,9 @@ class RunRecord:
     input_event_ids: tuple[UUID, ...] = ()
     state_version: int | None = None
     motive_result: str | None = None
+    wake_reason: str | None = None
+    latency_seconds: float | None = None
+    result: str | None = None
     termination_reason: str | None = None
     error_type: str | None = None
     cancel_requested: bool = False
@@ -143,6 +146,12 @@ class RunRecord:
             raise ContractValidationError("state_version must be non-negative")
         if self.termination_reason is not None:
             _require_non_blank(self.termination_reason, "termination_reason")
+        if self.wake_reason is not None:
+            _require_non_blank(self.wake_reason, "wake_reason")
+        if self.latency_seconds is not None and self.latency_seconds < 0:
+            raise ContractValidationError("latency_seconds must be non-negative")
+        if self.result is not None:
+            _require_non_blank(self.result, "result")
         if self.error_type is not None:
             _require_non_blank(self.error_type, "error_type")
         if self.checkpoint is not None and self.checkpoint.run_id != self.run_id:
@@ -175,6 +184,10 @@ class CognitiveCycle:
     def termination_reason(self) -> str | None:
         return self.record.termination_reason
 
+    @property
+    def wake_reason(self) -> str | None:
+        return self.record.wake_reason
+
 
 def run_to_dict(record: RunRecord) -> dict[str, Any]:
     return {
@@ -206,6 +219,9 @@ def run_to_dict(record: RunRecord) -> dict[str, Any]:
         "input_event_ids": [str(value) for value in record.input_event_ids],
         "state_version": record.state_version,
         "motive_result": record.motive_result,
+        "wake_reason": record.wake_reason,
+        "latency_seconds": record.latency_seconds,
+        "result": record.result,
         "termination_reason": record.termination_reason,
         "error_type": record.error_type,
         "cancel_requested": record.cancel_requested,
@@ -257,6 +273,13 @@ def run_from_dict(data: object) -> RunRecord:
             ),
             state_version=data.get("state_version"),
             motive_result=data.get("motive_result"),
+            wake_reason=data.get("wake_reason"),
+            latency_seconds=(
+                float(data["latency_seconds"])
+                if data.get("latency_seconds") is not None
+                else None
+            ),
+            result=data.get("result"),
             termination_reason=data.get("termination_reason"),
             error_type=data.get("error_type"),
             cancel_requested=bool(data.get("cancel_requested", False)),

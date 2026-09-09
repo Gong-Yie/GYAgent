@@ -42,6 +42,8 @@ from self_cognition.runtime.engine import CognitionEngine, raise_terminal_failur
 from self_cognition.runtime.run_context import RunContext
 from self_cognition.runtime.run_service import RunLifecycle
 from self_cognition.memory.service import MemoryEncodingService
+from self_cognition.observability.logging import LogContext, log_event
+from self_cognition.observability.metrics import MetricsRegistry
 
 
 logger = logging.getLogger(__name__)
@@ -57,6 +59,7 @@ class ProcessEventService:
         process_journal: ProcessJournal | None = None,
         memory_encoding: MemoryEncodingService | None = None,
         run_lifecycle: RunLifecycle | None = None,
+        metrics: MetricsRegistry | None = None,
     ) -> None:
         self._event_store = event_store
         self._evidence_repository = evidence_repository
@@ -65,6 +68,7 @@ class ProcessEventService:
         self._process_journal = process_journal
         self._memory_encoding = memory_encoding
         self._run_lifecycle = run_lifecycle
+        self._metrics = metrics
 
     def process(
         self,
@@ -78,6 +82,8 @@ class ProcessEventService:
         event: EventEnvelope,
         context: RunContext,
     ) -> EventEnvelope:
+        if self._metrics is not None:
+            self._metrics.increment("events.received")
         recorded_event = self._bind_run(event, context)
         self._append_event(recorded_event)
         if self._process_journal is not None:
@@ -139,6 +145,20 @@ class ProcessEventService:
         *,
         event_is_claimed: bool,
     ) -> ProcessEventResult:
+        if self._metrics is not None:
+            self._metrics.increment("events.processed")
+        log_event(
+            logger,
+            logging.INFO,
+            "event processing started",
+            LogContext(
+                run_id=context.run_id,
+                correlation_id=context.correlation_id,
+                event_id=event.event_id,
+                subject_id=event.subject.subject.subject_id,
+            ),
+            event_type=event.event_type,
+        )
         event_saved = False
         old_state: SubjectState | None = None
         run_record = (
@@ -147,6 +167,7 @@ class ProcessEventService:
                 RunKind.COGNITIVE_CYCLE,
                 event.subject,
                 input_event_ids=(event.event_id,),
+                wake_reason=f"event:{event.event_type}",
             )
             if self._run_lifecycle is not None
             else None
@@ -332,6 +353,8 @@ class ProcessEventService:
                     new_state,
                     expected_version=old_state.version,
                 )
+                if self._metrics is not None:
+                    self._metrics.increment("state.writes")
             self._encode_memories(new_state, recorded_event)
 
             reduction_event = EventEnvelope.state_reduced(
@@ -398,6 +421,8 @@ class ProcessEventService:
                 )
             return self._cancelled_result(context, event_saved, old_state)
         except Exception as error:
+            if self._metrics is not None:
+                self._metrics.increment("errors.processing")
             self._append_emitted_events(context)
             if event_saved and not event_is_claimed:
                 try:

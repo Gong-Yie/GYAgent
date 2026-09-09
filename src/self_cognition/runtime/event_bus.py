@@ -20,6 +20,7 @@ from self_cognition.core.protocols import EventStore, ProcessJournal
 from self_cognition.core.scopes import SubjectScope
 from self_cognition.core.time import Clock, SYSTEM_CLOCK
 from self_cognition.runtime.run_context import RunContext
+from self_cognition.observability.metrics import MetricsRegistry
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +57,7 @@ class SingleMachineEventBus:
         *,
         max_workers: int = 4,
         retry_policy: RetryPolicy = RetryPolicy(),
+        metrics: MetricsRegistry | None = None,
     ) -> None:
         if max_workers < 1:
             raise ValueError("max_workers must be positive")
@@ -64,6 +66,7 @@ class SingleMachineEventBus:
         self._process_event = process_event
         self._max_workers = max_workers
         self._retry_policy = retry_policy
+        self._metrics = metrics
         self._subject_locks: dict[SubjectScope, Lock] = {}
         self._subject_locks_guard = Lock()
         self._accepting = True
@@ -88,6 +91,8 @@ class SingleMachineEventBus:
         with self._accepting_guard:
             if not self._accepting:
                 raise RuntimeError("event bus is not accepting new events")
+        if self._metrics is not None:
+            self._metrics.increment("queue.enqueued")
         return self._process_event.enqueue(event, context)
 
     def drain(
@@ -95,6 +100,8 @@ class SingleMachineEventBus:
         clock: Clock = SYSTEM_CLOCK,
     ) -> tuple[ProcessEventResult, ...]:
         entries = self._journal.claimable_outbox(clock.now())
+        if self._metrics is not None:
+            self._metrics.set_gauge("queue.backlog", float(len(entries)))
         if not entries:
             return ()
         grouped = defaultdict(list)
