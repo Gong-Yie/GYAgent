@@ -1,3 +1,5 @@
+import re
+
 from self_cognition.core.cognition import CognitionRequest
 from self_cognition.core.contributions import CognitiveContribution, CognitionType
 from self_cognition.core.evidence import EvidenceRef
@@ -8,9 +10,13 @@ from self_cognition.core.ids import contribution_id
 SOURCE_MODULE = "semantic.preference_extractor"
 MODULE_VERSION = "1"
 TARGET_FIELD = "preferences.study_time"
-STUDY_TIME_PREFERENCES = {
-    "喜欢晚上学习": "晚上",
-    "喜欢早上学习": "早上",
+STUDY_TIME_PATTERN = re.compile(r"(早上|早晨|晚上|夜里|夜间)(?:学习|读书|学|了|$)")
+STUDY_TIME_VALUES = {
+    "早上": "早上",
+    "早晨": "早上",
+    "晚上": "晚上",
+    "夜里": "晚上",
+    "夜间": "晚上",
 }
 
 
@@ -27,14 +33,10 @@ class PreferenceExtractor:
         return self.process(request.event)
 
     def process(self, event: EventEnvelope) -> tuple[CognitiveContribution, ...]:
-        matched_values = {
-            preference_value
-            for phrase, preference_value in STUDY_TIME_PREFERENCES.items()
-            if phrase in event.payload.text
-        }
-        if len(matched_values) != 1:
+        matches = list(STUDY_TIME_PATTERN.finditer(event.payload.text))
+        if not matches:
             return ()
-        value = matched_values.pop()
+        value = STUDY_TIME_VALUES[matches[-1].group(1)]
 
         return (
             CognitiveContribution.set_from_event(

@@ -107,3 +107,16 @@ def test_new_study_preference_replaces_value_and_preserves_sources():
         evening_event.event_id,
         morning_event.event_id,
     )
+
+
+def test_current_preference_replaces_previous_value_for_natural_language_update():
+    evening_event = Event.user_message(
+        actor="user-1",
+        content="我以前喜欢晚上学习，但最近改成早上了",
+    )
+    extractor = PreferenceExtractor()
+
+    contributions = extractor.process(evening_event)
+
+    assert len(contributions) == 1
+    assert contributions[0].value == "早上"

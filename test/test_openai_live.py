@@ -22,7 +22,7 @@ def test_real_openai_preference_extraction():
         os.environ["OPENAI_API_KEY"],
         os.environ["OPENAI_MODEL"],
         timeout_seconds=30,
-        max_output_tokens=256,
+        max_output_tokens=2048,
     )
     event = Event.user_message("user-1", "我喜欢晚上学习")
     context = RunContext(

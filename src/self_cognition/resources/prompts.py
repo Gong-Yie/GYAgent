@@ -18,7 +18,12 @@ class PromptTemplate:
         )
 
 
-DIALOGUE_GENERATION = PromptTemplate("dialogue_generation", "1", "Return only the declared dialogue schema.")
+DIALOGUE_GENERATION = PromptTemplate(
+    "dialogue_generation",
+    "2",
+    "Return only one JSON object that conforms to the declared dialogue schema. "
+    "Do not return or repeat the schema definition.",
+)
 DIALOGUE_REVIEW = PromptTemplate("dialogue_review", "1", "Check evidence and expression without rewriting the answer.")
 PLANNING = PromptTemplate("planning", "1", "Create a bounded plan using only supplied capabilities.")
 ACTION_PROPOSAL = PromptTemplate("action_proposal", "1", "Propose one action without executing it.")

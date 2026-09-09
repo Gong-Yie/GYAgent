@@ -50,7 +50,8 @@ PLANNING_INSTRUCTIONS = PLANNING.system_instructions + "\n" + (
     "checkpoints and cancellation points and stay within the supplied budget. "
     "Make value, relationship, risk and consequence tradeoffs yourself; the "
     "deterministic validator checks only structure, scope, resources and versions. "
-    "Do not claim a step has run. Return only the schema."
+    "Do not claim a step has run. Return only one JSON object that conforms to "
+    "the provided schema. Do not return or repeat the schema definition."
 )
 REPLANNING_INSTRUCTIONS = (
     PLANNING_INSTRUCTIONS

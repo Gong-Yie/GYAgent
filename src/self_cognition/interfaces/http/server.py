@@ -15,7 +15,7 @@ from self_cognition.core.dialogue import DialogueRequest, draft_to_dict
 from self_cognition.core.events import EventEnvelope
 from self_cognition.core.identity import GoalPriority
 from self_cognition.core.plans import GoalPlanningRequest, PlanBudget, GoalPlannedPayload, PlanRevisedPayload, plan_to_dict
-from self_cognition.core.scopes import SubjectScope
+from self_cognition.core.scopes import ConversationScope, SubjectScope
 from self_cognition.core.time import SYSTEM_CLOCK
 from self_cognition.infrastructure.persistence.serialization import memory_to_dict, state_to_dict
 from self_cognition.core.runs import run_to_dict
@@ -105,7 +105,13 @@ def _handle(container: ApplicationContainer, method: str, path: str, query: dict
     if method == "POST" and path == "/chat":
         text = _text(body, "message")
         context = _context()
-        event = EventEnvelope.user_message(subject, text, run_id=context.run_id, correlation_id=context.correlation_id)
+        conversation_id = body.get("conversation_id")
+        if conversation_id is not None and (
+            not isinstance(conversation_id, str) or not conversation_id.strip()
+        ):
+            raise ValueError("conversation_id must be a non-blank string")
+        conversation = ConversationScope(conversation_id) if conversation_id else None
+        event = EventEnvelope.user_message(subject, text, conversation=conversation, run_id=context.run_id, correlation_id=context.correlation_id)
         result = container.converse.converse(DialogueRequest(event), context)
         return _converse(result)
     if method == "GET" and path == "/memories":
@@ -174,9 +180,12 @@ def _handle(container: ApplicationContainer, method: str, path: str, query: dict
         return {"runs": [run_to_dict(item) for item in container.run_repository.read_by_subject(subject)]}
     if method == "POST" and path.startswith("/runs/") and path.endswith("/cancel"):
         run_id = UUID(path.split("/")[2])
-        record = container.run_lifecycle.request_cancel(run_id)
+        record = container.run_repository.get(run_id)
+        if record is None:
+            raise LookupError("run does not exist")
         if record.subject != subject:
             raise LookupError("run does not belong to subject")
+        record = container.run_lifecycle.request_cancel(run_id, subject=subject)
         return run_to_dict(record)
     if method == "GET" and path.startswith("/runs/"):
         record = container.run_repository.get(UUID(path.split("/")[-1]))

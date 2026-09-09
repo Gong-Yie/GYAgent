@@ -1,5 +1,6 @@
 import json
 from typing import Any
+from uuid import uuid4
 
 from self_cognition.core.contributions import (
     CognitionType,
@@ -68,7 +69,7 @@ class OpenAIResponsesCognitionModel:
         model: str,
         *,
         timeout_seconds: float = 30.0,
-        max_output_tokens: int = 512,
+        max_output_tokens: int = 2048,
         assessment_kind: str = "semantic",
     ) -> None:
         if not model.strip():
@@ -93,7 +94,7 @@ class OpenAIResponsesCognitionModel:
         *,
         base_url: str | None = None,
         timeout_seconds: float = 30.0,
-        max_output_tokens: int = 512,
+        max_output_tokens: int = 2048,
         assessment_kind: str = "semantic",
     ) -> "OpenAIResponsesCognitionModel":
         from openai import OpenAI
@@ -146,7 +147,11 @@ class OpenAIResponsesCognitionModel:
         instructions = (
             "Extract only explicit user cognition facts. Return no candidate "
             "when unsupported. Classify every candidate with cognition_type. "
-            "Every candidate must cite the supplied event ID."
+            "Use the canonical target field preferences.study_time for study-time "
+            "preferences; do not invent aliases or translate field names. "
+            "Every candidate must cite the supplied event ID. Return only one "
+            "JSON object that conforms to the provided schema. Do not return or "
+            "repeat the schema definition."
         )
         schema = OUTPUT_SCHEMA
         source_text = ""
@@ -157,6 +162,8 @@ class OpenAIResponsesCognitionModel:
                 "candidate when unsupported; cite the request event and source event "
                 "when supplied, plus relevant context evidence. Confidence is a "
                 "subjective assessment, not a statistically calibrated probability."
+                " Return only one JSON object that conforms to the provided schema. "
+                "Do not return or repeat the schema definition."
             )
             if isinstance(event.payload, AssessmentRequestPayload):
                 source_text = "\nsource_event=" + json.dumps(
@@ -197,10 +204,14 @@ class OpenAIResponsesCognitionModel:
 
         response_id = getattr(response, "id", None)
         output_text = getattr(response, "output_text", None)
-        if not isinstance(response_id, str) or not response_id.strip():
-            raise ModelOutputError("model response is missing an ID")
+        invalid = not isinstance(response_id, str) or not response_id.strip()
+        if invalid:
+            response_id = f"unidentified-{uuid4()}"
         if not isinstance(output_text, str) or not output_text.strip():
-            raise ModelOutputError("model response is missing structured output")
+            invalid = True
+            dump = getattr(response, "model_dump_json", None)
+            output_text = dump() if callable(dump) else json.dumps({"output_text": output_text})
+        invalid = invalid or getattr(response, "status", "completed") != "completed"
 
         response_event = EventEnvelope.model_response(
             event,
@@ -212,6 +223,15 @@ class OpenAIResponsesCognitionModel:
             correlation_id=context.correlation_id,
         )
         context.emit_event(response_event)
+
+        if invalid:
+            status = getattr(response, "status", "unknown")
+            details = getattr(response, "incomplete_details", None)
+            reason = getattr(details, "reason", None)
+            suffix = f" ({status}: {reason})" if reason else f" ({status})"
+            raise ModelOutputError(
+                "provider returned invalid or incomplete output" + suffix
+            )
 
         try:
             payload = json.loads(output_text)

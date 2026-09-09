@@ -10,7 +10,7 @@ from self_cognition.bootstrap import ApplicationContainer, build_container
 from self_cognition.core.dialogue import DialogueRequest, draft_to_dict
 from self_cognition.core.evidence import EvidenceRef
 from self_cognition.core.events import EventEnvelope
-from self_cognition.core.scopes import SubjectScope
+from self_cognition.core.scopes import ConversationScope, SubjectScope
 from self_cognition.core.time import SYSTEM_CLOCK
 from self_cognition.infrastructure.persistence.serialization import memory_to_dict, state_to_dict
 
@@ -19,6 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Self-cognition local interface")
     parser.add_argument("subject_id", help="主体 ID")
     parser.add_argument("message", nargs="?", help="用户消息文本")
+    parser.add_argument("--conversation-id")
     parser.add_argument("--data-dir", default=None, type=Path)
     return parser
 
@@ -50,7 +51,8 @@ def _chat(argv: list[str], container: ApplicationContainer | None) -> int:
         from self_cognition.runtime.run_context import RunContext
 
         context = RunContext(new_run_id(), new_correlation_id(), SYSTEM_CLOCK.now() + timedelta(seconds=30))
-        event = EventEnvelope.user_message(SubjectScope.legacy_user(args.subject_id), args.message, run_id=context.run_id, correlation_id=context.correlation_id)
+        conversation = ConversationScope(args.conversation_id) if args.conversation_id else None
+        event = EventEnvelope.user_message(SubjectScope.legacy_user(args.subject_id), args.message, conversation=conversation, run_id=context.run_id, correlation_id=context.correlation_id)
         result = dependencies.converse.converse(DialogueRequest(event), context)
     print(json.dumps(_result_output(result), ensure_ascii=False, sort_keys=True))
     return 0 if result.status is ProcessEventStatus.SUCCEEDED else 1

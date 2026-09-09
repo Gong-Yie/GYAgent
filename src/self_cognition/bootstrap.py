@@ -60,6 +60,7 @@ from self_cognition.cognition.semantic.name_extractor import NameExtractor
 from self_cognition.cognition.semantic.preference_extractor import (
     PreferenceExtractor,
 )
+from self_cognition.cognition.semantic.llm_extractor import LLMSemanticExtractor
 from self_cognition.executive.dialogue.rule_based import RuleBasedDialogueModel
 from self_cognition.executive.action.fake import RuleActionModel
 from self_cognition.executive.planning.fake import RulePlanningModel
@@ -195,6 +196,7 @@ def build_container(
     tool_executor: ToolExecutor | None = None,
     metacognition_model: CognitionModel | None = None,
     affect_model: CognitionModel | None = None,
+    semantic_model: CognitionModel | None = None,
 ) -> ApplicationContainer:
     resolved_settings = settings or load_settings(dotenv_path)
     if data_dir is not None:
@@ -205,7 +207,10 @@ def build_container(
         api_key, model, base_url = openai_configuration
         if dialogue_model is None:
             dialogue_model = OpenAIResponsesDialogueModel.from_api_key(
-                api_key, model, base_url=base_url
+                api_key,
+                model,
+                base_url=base_url,
+                max_output_tokens=resolved_settings.dialogue_max_output_tokens,
             )
         if planning_model is None:
             planning_model = OpenAIResponsesPlanningModel.from_api_key(
@@ -220,6 +225,7 @@ def build_container(
                 api_key,
                 model,
                 base_url=base_url,
+                max_output_tokens=resolved_settings.cognition_max_output_tokens,
                 assessment_kind="metacognition",
             )
         if module_registrations is None and affect_model is None:
@@ -227,7 +233,16 @@ def build_container(
                 api_key,
                 model,
                 base_url=base_url,
+                max_output_tokens=resolved_settings.cognition_max_output_tokens,
                 assessment_kind="affect",
+            )
+        if module_registrations is None and semantic_model is None:
+            semantic_model = OpenAIResponsesCognitionModel.from_api_key(
+                api_key,
+                model,
+                base_url=base_url,
+                max_output_tokens=resolved_settings.cognition_max_output_tokens,
+                assessment_kind="semantic",
             )
     layout = FileDataLayout(resolved_settings.data_dir).ensure()
     metrics = MetricsRegistry()
@@ -261,7 +276,11 @@ def build_container(
     FileProcessingRecovery(layout.event_log, process_journal).reconcile()
     module_registry = _module_registry(
         module_registrations
-        or _default_module_registrations(metacognition_model, affect_model),
+        or _default_module_registrations(
+            metacognition_model,
+            affect_model,
+            semantic_model,
+        ),
         resolved_settings.enabled_modules,
     )
     workspace_builder = WorkspaceBuilder(
@@ -450,13 +469,20 @@ def build_container(
 def _default_module_registrations(
     metacognition_model: CognitionModel | None = None,
     affect_model: CognitionModel | None = None,
+    semantic_model: CognitionModel | None = None,
 ) -> tuple[ModuleRegistration, ...]:
     return (
         ModuleRegistration(
-            "semantic.preference_extractor",
+            (
+                "semantic.llm_extractor"
+                if semantic_model is not None
+                else "semantic.preference_extractor"
+            ),
             "semantic",
-            "1",
-            PreferenceExtractor(),
+            "2" if semantic_model is not None else "1",
+            LLMSemanticExtractor(semantic_model)
+            if semantic_model is not None
+            else PreferenceExtractor(),
         ),
         ModuleRegistration(
             "semantic.name_extractor",

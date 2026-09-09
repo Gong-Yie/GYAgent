@@ -72,7 +72,9 @@ GENERATION_INSTRUCTIONS = DIALOGUE_GENERATION.system_instructions + "\n" + (
     "relationships, risks, consequences and disclosure intent. Record the decision "
     "scope, reasons, evidence and whether you override intent. Withholding still "
     "requires an appropriate user-facing reply. Do not claim confirmation absent "
-    "evidence. Plain greetings can have empty claims. Return only the schema."
+    "evidence. Plain greetings can have empty claims. Return only one JSON object "
+    "that conforms to the provided schema. Do not return or repeat the schema "
+    "definition."
 )
 REVIEW_INSTRUCTIONS = DIALOGUE_REVIEW.system_instructions + "\n" + (
     "Independently check the entire proposed answer against the supplied workspace. "
@@ -95,7 +97,7 @@ class OpenAIResponsesDialogueModel:
         model: str,
         *,
         timeout_seconds: float = 30.0,
-        max_output_tokens: int = 2048,
+        max_output_tokens: int = 4096,
     ) -> None:
         if not model.strip() or timeout_seconds <= 0 or max_output_tokens < 1:
             raise ValueError("invalid dialogue model configuration")

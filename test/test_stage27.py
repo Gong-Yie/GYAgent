@@ -12,6 +12,16 @@ from self_cognition.core.runs import RunBudget
 from self_cognition.observability.logging import LogContext, log_event
 from self_cognition.observability.metrics import MetricsRegistry
 from self_cognition.observability.tracing import TraceRecorder
+from self_cognition.infrastructure.llm.action_responses import (
+    DECISION_INSTRUCTIONS,
+    PROPOSAL_INSTRUCTIONS,
+)
+from self_cognition.infrastructure.llm.dialogue_responses import (
+    GENERATION_INSTRUCTIONS,
+)
+from self_cognition.infrastructure.llm.planning_responses import (
+    PLANNING_INSTRUCTIONS,
+)
 from self_cognition.infrastructure.llm.router import (
     ModelRegistration,
     ModelRouter,
@@ -19,6 +29,24 @@ from self_cognition.infrastructure.llm.router import (
 )
 from self_cognition.resources.prompts import DIALOGUE_GENERATION
 from self_cognition.runtime.run_context import RunContext
+
+
+@pytest.mark.parametrize(
+    "instructions",
+    (
+        GENERATION_INSTRUCTIONS,
+        PLANNING_INSTRUCTIONS,
+        PROPOSAL_INSTRUCTIONS,
+        DECISION_INSTRUCTIONS,
+    ),
+)
+def test_structured_output_prompts_request_values_not_schema(
+    instructions: str,
+) -> None:
+    lowered = instructions.lower()
+    assert "return only the schema" not in lowered
+    assert "return only the declared dialogue schema" not in lowered
+    assert "do not return or repeat the schema definition" in lowered
 
 
 def test_observability_redacts_logs_and_records_metrics_and_trace(caplog):

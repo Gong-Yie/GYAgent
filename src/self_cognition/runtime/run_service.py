@@ -118,11 +118,19 @@ class RunLifecycle:
             )
         )
 
-    def request_cancel(self, run_id: UUID, reason: str = "cancelled") -> RunRecord:
+    def request_cancel(
+        self,
+        run_id: UUID,
+        reason: str = "cancelled",
+        *,
+        subject: SubjectScope | None = None,
+    ) -> RunRecord:
         with self._lock:
             record = self._repository.get(run_id)
             if record is None:
                 raise ContractValidationError("cannot cancel an unknown run")
+            if subject is not None and record.subject != subject:
+                raise ContractValidationError("run does not belong to subject")
             context = self._contexts.get(run_id)
             if context is not None:
                 context.cancel(reason)

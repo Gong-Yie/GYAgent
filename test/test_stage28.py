@@ -15,7 +15,10 @@ from self_cognition.core.actions import ActionResultStatus
 from self_cognition.tools.executor import FileReadToolExecutor, ToolExecutionPolicy
 from self_cognition.core.ids import new_correlation_id, new_run_id
 from self_cognition.runtime.run_context import RunContext
+from self_cognition.core.runs import RunKind
+from self_cognition.interfaces.http.server import _handle
 from self_cognition.interfaces.http import create_server
+from self_cognition.executive.dialogue.rule_based import RuleBasedDialogueModel
 from self_cognition.workers.cognition import CognitionWorker
 from self_cognition.workers.scheduler import SchedulerWorker
 
@@ -47,6 +50,22 @@ def test_http_loopback_chat_memory_and_health(tmp_path):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_http_chat_preserves_conversation_scope(tmp_path):
+    app = build_container(tmp_path / "data", dialogue_model=RuleBasedDialogueModel())
+    result = _handle(
+        app,
+        "POST",
+        "/chat",
+        {},
+        {"subject_id": "user-1", "message": "你好", "conversation_id": "chat-1"},
+    )
+
+    assert result["status"] == "succeeded"
+    events = app.event_store.read_by_subject(SubjectScope.legacy_user("user-1"))
+    message = next(event for event in events if event.event_type == "user.message")
+    assert message.scope.conversation.conversation_id == "chat-1"
 
 
 def test_http_rejects_non_loopback_host():
@@ -82,3 +101,27 @@ def test_confirmation_is_audited_and_executes_once(tmp_path):
     result = app.action.approve_and_execute(request.action_id, user, context)
     assert result.result is not None and result.result.status is ActionResultStatus.SUCCEEDED
     assert any(record.target_id == str(request.action_id) for record in app.governance.read_audit(mind))
+
+@pytest.mark.parametrize(
+    ("mind_id", "subject_id", "allowed"),
+    (("default-mind", "user-1", True), ("default-mind", "user-2", False), ("mind-b", "user-1", False)),
+)
+def test_http_cancel_checks_subject_before_side_effects(tmp_path, mind_id, subject_id, allowed):
+    app = build_container(tmp_path / "data")
+    owner = SubjectScope.legacy_user("user-1")
+    context = RunContext(new_run_id(), new_correlation_id(), datetime.now(timezone.utc) + timedelta(minutes=1))
+    app.run_lifecycle.begin(context, RunKind.ACTION, owner)
+    original = app.run_repository.get(context.run_id)
+
+    if allowed:
+        result = _handle(app, "POST", f"/runs/{context.run_id}/cancel", {}, {"mind_id": mind_id, "subject_id": subject_id})
+        assert result["cancel_requested"] is True
+    else:
+        with pytest.raises(LookupError, match="subject"):
+            _handle(app, "POST", f"/runs/{context.run_id}/cancel", {}, {"mind_id": mind_id, "subject_id": subject_id})
+
+    stored = app.run_repository.get(context.run_id)
+    assert stored.cancel_requested is allowed
+    assert context.is_cancelled is allowed
+    if not allowed:
+        assert stored == original

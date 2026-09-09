@@ -147,6 +147,29 @@ def test_invalid_model_structure_never_reaches_reducer(output_text):
     assert state_repository.load("user-1") is None
 
 
+def test_incomplete_empty_model_response_is_audited_before_failure():
+    event = Event.user_message("user-1", "我喜欢晚上学习")
+    response = SimpleNamespace(
+        id="resp-incomplete",
+        output_text="",
+        status="incomplete",
+        model_dump_json=lambda: '{"status":"incomplete"}',
+    )
+    model = OpenAIResponsesCognitionModel(
+        SimpleNamespace(responses=FakeResponses(response=response)),
+        "test-model",
+    )
+
+    context = make_context()
+    with pytest.raises(ModelOutputError, match="invalid or incomplete"):
+        LLMSemanticExtractor(model).process(event, context)
+
+    emitted = context.drain_emitted_events()
+    assert len(emitted) == 1
+    assert emitted[0].payload.response_id == "resp-incomplete"
+    assert emitted[0].payload.raw_output == '{"status":"incomplete"}'
+
+
 def test_model_timeout_does_not_modify_state():
     model = OpenAIResponsesCognitionModel(
         SimpleNamespace(

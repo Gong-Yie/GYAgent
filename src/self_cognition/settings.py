@@ -19,6 +19,8 @@ class ApplicationSettings:
     worker_enabled: bool = False
     worker_poll_interval_seconds: float = 0.1
     worker_max_workers: int = 4
+    cognition_max_output_tokens: int = 2048
+    dialogue_max_output_tokens: int = 4096
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "data_dir", Path(self.data_dir))
@@ -30,6 +32,10 @@ class ApplicationSettings:
             raise ValueError("worker poll interval must be positive")
         if self.worker_max_workers < 1:
             raise ValueError("worker max workers must be positive")
+        if self.cognition_max_output_tokens < 1:
+            raise ValueError("cognition max output tokens must be positive")
+        if self.dialogue_max_output_tokens < 1:
+            raise ValueError("dialogue max output tokens must be positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +76,12 @@ def load_settings(
             0.1,
         ),
         worker_max_workers=_integer(values, "SC_WORKER_MAX_WORKERS", 4),
+        cognition_max_output_tokens=_integer(
+            values, "SC_COGNITION_MAX_OUTPUT_TOKENS", 2048
+        ),
+        dialogue_max_output_tokens=_integer(
+            values, "SC_DIALOGUE_MAX_OUTPUT_TOKENS", 4096
+        ),
     )
 
 
