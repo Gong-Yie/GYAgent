@@ -4,7 +4,7 @@ import json
 import logging
 from dataclasses import replace
 from threading import RLock
-from uuid import UUID, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from self_cognition.application.pursue_goal import PursueGoalService
 from self_cognition.application.results import (
@@ -45,7 +45,8 @@ from self_cognition.core.plans import (
     PlanStep,
 )
 from self_cognition.core.runs import RunKind, RunStatus
-from self_cognition.core.protocols import EventStore, StateRepository
+from self_cognition.core.protocols import EventStore, GovernanceRepository, StateRepository
+from self_cognition.core.governance import AuditAction, AuditRecord
 from self_cognition.core.scopes import DataScope, DisclosureScope, SubjectScope
 from self_cognition.core.workspace import (
     RetrievalBudget,
@@ -77,6 +78,7 @@ class ActionService:
         validator: ActionValidator | None = None,
         run_lifecycle: RunLifecycle | None = None,
         process_event: "ProcessEventService | None" = None,
+        governance: GovernanceRepository | None = None,
     ) -> None:
         self._events = event_store
         self._states = state_repository
@@ -88,6 +90,7 @@ class ActionService:
         self._validator = validator or ActionValidator()
         self._run_lifecycle = run_lifecycle
         self._process_event = process_event
+        self._governance = governance
         self._lock = RLock()
 
     def execute(
@@ -184,6 +187,51 @@ class ActionService:
         with self._lock:
             return self._prepare(request, context)
 
+    def approve_and_execute(
+        self,
+        action_id: UUID,
+        approver: SubjectScope,
+        context: RunContext,
+    ) -> ActionServiceResult:
+        """Persist a user approval and execute its one-time action."""
+        with self._lock:
+            event = next(
+                (
+                    item
+                    for item in self._events.read_by_mind(approver.mind)
+                    if isinstance(item.payload, ActionDecisionPayload)
+                    and item.payload.request.action_id == action_id
+                ),
+                None,
+            )
+            if event is None:
+                raise ContractValidationError("action decision does not exist")
+            payload = event.payload
+            assert isinstance(payload, ActionDecisionPayload)
+            if approver.subject.kind.value != "user":
+                raise ContractValidationError("approval requires a user actor")
+            if payload.request.owner.mind != approver.mind:
+                raise ContractValidationError("approval mind does not match action")
+            if payload.decision.status is not ActionDecisionStatus.CONFIRMATION_REQUIRED:
+                raise ContractValidationError("action does not require confirmation")
+            if context.clock.now() > payload.decision.valid_until:
+                raise ContractValidationError("action decision has expired")
+            if self._governance is not None:
+                self._governance.append_audit(
+                    AuditRecord(
+                        uuid5(NAMESPACE_URL, f"approval:{action_id}"),
+                        AuditAction.APPROVE,
+                        payload.request.owner,
+                        approver,
+                        "action",
+                        str(action_id),
+                        context.clock.now(),
+                        {"action_id": str(action_id)},
+                    )
+                )
+            approved = replace(payload.decision, status=ActionDecisionStatus.ALLOWED, confirmation_prompt=None)
+            return self.execute(payload.request, approved, context)
+
     def record_result(
         self,
         owner: SubjectScope,
@@ -215,7 +263,11 @@ class ActionService:
             assert isinstance(payload, ActionDecisionPayload)
             if payload.request.owner != owner or result.owner != owner:
                 raise ContractValidationError("action result owner does not match")
-            if payload.decision.status is not ActionDecisionStatus.ALLOWED:
+            approved = payload.decision.status is ActionDecisionStatus.ALLOWED or (
+                payload.decision.status is ActionDecisionStatus.CONFIRMATION_REQUIRED
+                and self._approval_recorded(owner, result.action_id)
+            )
+            if not approved:
                 raise ContractValidationError(
                     "only an allowed action may record a result"
                 )
@@ -277,6 +329,16 @@ class ActionService:
                 result,
                 event.event_id,
             )
+
+    def _approval_recorded(self, owner: SubjectScope, action_id: UUID) -> bool:
+        if self._governance is None:
+            return False
+        return any(
+            record.action is AuditAction.APPROVE
+            and record.target_type == "action"
+            and record.target_id == str(action_id)
+            for record in self._governance.read_audit(owner)
+        )
 
     def _reflow_result(self, event: EventEnvelope, context: RunContext) -> None:
         if self._process_event is None:

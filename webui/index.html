@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>自我认知控制台</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">●</span><span>自我认知</span></div>
+      <p class="eyebrow">LOCAL CONSOLE</p>
+      <nav aria-label="主导航">
+        <button class="nav-item active" data-view="chat">对话</button>
+        <button class="nav-item" data-view="memories">记忆</button>
+        <button class="nav-item" data-view="runs">运行</button>
+        <button class="nav-item" data-view="approvals">批准</button>
+        <button class="nav-item" data-view="relationships">关系</button>
+        <button class="nav-item" data-view="conflicts">冲突</button>
+        <button class="nav-item" data-view="usage">用量</button>
+        <button class="nav-item" data-view="settings">设置</button>
+      </nav>
+      <div class="sidebar-footer"><div class="health-dot" id="health-dot"></div><div><span class="muted">服务状态</span><strong id="health-label">检查中</strong></div></div>
+    </aside>
+    <main class="main">
+      <header class="topbar"><div><span class="eyebrow" id="view-kicker">CURRENT SESSION</span><h1 id="view-title">对话</h1></div><span class="scope-chip">default-mind / user-1</span></header>
+      <section id="view" class="view" aria-live="polite"></section>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

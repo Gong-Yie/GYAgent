@@ -322,6 +322,7 @@ def build_container(
         executor=tool_executor,
         run_lifecycle=run_lifecycle,
         process_event=process_event,
+        governance=governance,
     )
     user_control = UserControlService(
         event_store,
