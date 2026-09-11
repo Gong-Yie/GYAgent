@@ -33,7 +33,12 @@ class PreferenceExtractor:
         return self.process(request.event)
 
     def process(self, event: EventEnvelope) -> tuple[CognitiveContribution, ...]:
-        matches = list(STUDY_TIME_PATTERN.finditer(event.payload.text))
+        matches = [
+            match
+            for match in STUDY_TIME_PATTERN.finditer(event.payload.text)
+            if not event.payload.text[max(0, match.start() - 4) : match.start()]
+            .endswith(("不喜欢", "不再喜欢", "不想"))
+        ]
         if not matches:
             return ()
         value = STUDY_TIME_VALUES[matches[-1].group(1)]
