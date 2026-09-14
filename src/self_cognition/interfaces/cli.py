@@ -1,9 +1,12 @@
 import argparse
 import json
 import sys
+from contextlib import nullcontext
+from threading import Event
 from datetime import timedelta
 from pathlib import Path
 from typing import TextIO
+from uuid import UUID
 
 from self_cognition.application.results import ConverseResult, ProcessEventStatus
 from self_cognition.bootstrap import ApplicationContainer, build_container
@@ -30,6 +33,8 @@ def main(argv: list[str] | None = None, *, container: ApplicationContainer | Non
     raw = list(sys.argv[1:] if argv is None else argv)
     try:
         command, args = _command_args(raw)
+        if command == "worker":
+            return _worker(args, container)
         return _chat(args if command == "chat" else raw, container) if command in {None, "chat"} else _run_command(command, args, container)
     except Exception as error:
         print(json.dumps({"status": "failed", "error_code": _error_code(error), "error_type": type(error).__name__}, ensure_ascii=False, sort_keys=True), file=sys.stderr)
@@ -37,8 +42,22 @@ def main(argv: list[str] | None = None, *, container: ApplicationContainer | Non
 
 
 def _command_args(argv: list[str]) -> tuple[str | None, list[str]]:
-    aliases = {"chat", "memory", "memories", "correct", "export", "forget-dry-run", "forget", "replay", "doctor", "approve"}
+    aliases = {"chat", "worker", "proactive", "mailbox", "mailbox-ack", "memory", "memories", "correct", "export", "forget-dry-run", "forget", "replay", "doctor", "approve"}
     return (argv[0], argv[1:]) if argv and argv[0] in aliases else (None, argv)
+
+
+def _worker(argv: list[str], container: ApplicationContainer | None) -> int:
+    parser = argparse.ArgumentParser(prog="self-cognition worker")
+    parser.add_argument("--data-dir", default=None, type=Path)
+    args = parser.parse_args(argv)
+    dependencies = container or build_container(args.data_dir)
+    stop = Event()
+    try:
+        with dependencies.lifecycle:
+            stop.wait()
+    except KeyboardInterrupt:
+        return 0
+    return 0
 
 
 def _chat(argv: list[str], container: ApplicationContainer | None) -> int:
@@ -46,13 +65,29 @@ def _chat(argv: list[str], container: ApplicationContainer | None) -> int:
     if args.message is None:
         raise ValueError("message is required")
     dependencies = container or build_container(args.data_dir)
-    with dependencies.lifecycle:
-        from self_cognition.core.ids import new_correlation_id, new_run_id
-        from self_cognition.runtime.run_context import RunContext
+    if dependencies.lifecycle.is_closed:
+        raise RuntimeError("application lifecycle is closed")
+    from self_cognition.core.ids import new_correlation_id, new_run_id
+    from self_cognition.runtime.run_context import RunContext
 
-        context = RunContext(new_run_id(), new_correlation_id(), SYSTEM_CLOCK.now() + timedelta(seconds=30))
-        conversation = ConversationScope(args.conversation_id) if args.conversation_id else None
-        event = EventEnvelope.user_message(SubjectScope.legacy_user(args.subject_id), args.message, conversation=conversation, run_id=context.run_id, correlation_id=context.correlation_id)
+    context = RunContext(new_run_id(), new_correlation_id(), SYSTEM_CLOCK.now() + timedelta(seconds=30))
+    conversation = ConversationScope(args.conversation_id) if args.conversation_id else None
+    event = EventEnvelope.user_message(SubjectScope.legacy_user(args.subject_id), args.message, conversation=conversation, run_id=context.run_id, correlation_id=context.correlation_id)
+    if dependencies.settings.worker_enabled:
+        dependencies.event_bus.publish(event, context)
+        fast = dependencies.orchestrator.fast_only(event, context)
+        value = fast.value
+        output = {
+            "status": "accepted",
+            "run_id": str(context.run_id),
+            "correlation_id": str(context.correlation_id),
+            "slow_pending": True,
+            "response": value.text,
+            "intention_ids": list(value.intention_ids),
+        }
+        print(json.dumps(output, ensure_ascii=False, sort_keys=True))
+        return 0
+    with dependencies.lifecycle:
         result = dependencies.converse.converse(DialogueRequest(event), context)
     print(json.dumps(_result_output(result), ensure_ascii=False, sort_keys=True))
     return 0 if result.status is ProcessEventStatus.SUCCEEDED else 1
@@ -66,12 +101,39 @@ def _run_command(command: str, argv: list[str], container: ApplicationContainer 
     parser.add_argument("--value")
     parser.add_argument("--cognition-type", default="preference")
     parser.add_argument("--action-id")
+    parser.add_argument("--message-id")
     args = parser.parse_args(argv)
     dependencies = container or build_container(args.data_dir)
     subject = SubjectScope.legacy_user(args.subject_id)
-    with dependencies.lifecycle:
+    lifecycle_context = dependencies.lifecycle if container is None else nullcontext()
+    with lifecycle_context:
         if command in {"memory", "memories"}:
             payload: object = [memory_to_dict(item) for item in dependencies.memory_repository.read_by_subject(subject)]
+        elif command == "proactive":
+            payload = [
+                _jsonable(item)
+                for item in dependencies.proactive.active(
+                    subject,
+                    as_of=SYSTEM_CLOCK.now(),
+                )
+            ]
+        elif command == "mailbox":
+            payload = list(
+                dependencies.proactive.mailbox(subject, as_of=SYSTEM_CLOCK.now())
+            )
+        elif command == "mailbox-ack":
+            if not args.message_id:
+                raise ValueError("--message-id is required")
+            result = dependencies.proactive.acknowledge(
+                subject,
+                UUID(args.message_id),
+                context=_context(),
+            )
+            payload = {
+                "status": result.decision.status.value,
+                "message_id": args.message_id,
+                "reused": result.reused,
+            }
         elif command == "correct":
             if not args.target_field or args.value is None:
                 raise ValueError("--target-field and --value are required")

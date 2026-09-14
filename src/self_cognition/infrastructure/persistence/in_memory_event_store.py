@@ -52,6 +52,10 @@ class InMemoryEventStore:
                 event for event in self._events if event.subject == subject
             )
 
+    def read_all(self) -> tuple[EventEnvelope, ...]:
+        with self._lock:
+            return tuple(self._events)
+
     def read_by_mind(self, mind: MindScope) -> tuple[EventEnvelope, ...]:
         if not isinstance(mind, MindScope):
             raise TypeError("mind must be a MindScope")

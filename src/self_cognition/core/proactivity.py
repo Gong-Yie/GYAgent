@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 from uuid import UUID
 
 from self_cognition.core.affect import Motive
@@ -12,6 +12,51 @@ from self_cognition.core.scopes import SubjectScope
 
 if TYPE_CHECKING:
     from self_cognition.core.evidence import EvidenceRef
+    from self_cognition.core.events import EventEnvelope
+    from self_cognition.core.workspace import WorkspacePacket
+    from self_cognition.runtime.run_context import RunContext
+
+
+@dataclass(frozen=True, slots=True)
+class MotiveProposal:
+    should_form: bool
+    kind: str
+    description: str
+    expected_behavior: str
+    strength: float
+    priority: int
+    valid_for_seconds: int
+    evidence_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.should_form, bool):
+            raise ContractValidationError("motive proposal decision is invalid")
+        if not self.should_form:
+            return
+        for value, name in (
+            (self.kind, "motive kind"),
+            (self.description, "motive description"),
+            (self.expected_behavior, "expected behavior"),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ContractValidationError(f"{name} must not be blank")
+        if not 0.0 <= self.strength <= 1.0:
+            raise ContractValidationError("motive strength must be between zero and one")
+        if type(self.priority) is not int or self.priority < 0:
+            raise ContractValidationError("motive priority must be non-negative")
+        if type(self.valid_for_seconds) is not int or self.valid_for_seconds < 1:
+            raise ContractValidationError("motive validity must be positive")
+        if not self.evidence_ids:
+            raise ContractValidationError("formed motives require evidence")
+
+
+class ProactivityModel(Protocol):
+    def propose(
+        self,
+        event: EventEnvelope,
+        workspace: WorkspacePacket,
+        context: RunContext,
+    ) -> MotiveProposal: ...
 
 
 class IntentionStatus(str, Enum):
@@ -212,6 +257,11 @@ def proactive_dependency_ids(event: object) -> frozenset[UUID]:
             ids.update(ref.evidence_id for ref in value.evidence_refs)
         elif isinstance(value, Motive):
             ids.update(value.source_event_ids)
+        else:
+            for field in ("message_id", "intention_id"):
+                identifier = getattr(value, field, None)
+                if isinstance(identifier, UUID):
+                    ids.add(identifier)
     return frozenset(ids)
 
 

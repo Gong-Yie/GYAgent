@@ -28,6 +28,7 @@ class ApplicationLifecycle:
         self._lock = Lock()
         self._worker: Thread | None = None
         self._worker_error_type: str | None = None
+        self._closed = False
 
     @property
     def is_ready(self) -> bool:
@@ -37,12 +38,17 @@ class ApplicationLifecycle:
     def worker_error_type(self) -> str | None:
         return self._worker_error_type
 
+    @property
+    def is_closed(self) -> bool:
+        return self._closed
+
     def start(self) -> None:
         with self._lock:
             if self._ready.is_set():
                 return
             self._stop_requested.clear()
             self._worker_error_type = None
+            self._closed = False
             started_resources: list[object] = []
             try:
                 for resource in self._resources:
@@ -72,6 +78,7 @@ class ApplicationLifecycle:
     def stop(self, timeout: float | None = None) -> None:
         with self._lock:
             self._ready.clear()
+            self._closed = True
             for resource in self._resources:
                 stop_accepting = getattr(resource, "stop_accepting", None)
                 if callable(stop_accepting):

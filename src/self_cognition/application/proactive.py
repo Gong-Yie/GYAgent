@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
-from uuid import NAMESPACE_URL, UUID, uuid5
+from datetime import datetime, timedelta
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from self_cognition.core.affect import Motive, compete_motives
 from self_cognition.core.errors import ContractValidationError
@@ -10,18 +10,25 @@ from self_cognition.core.evidence import EvidenceRef
 from self_cognition.core.events import (
     BehavioralDecisionPayload,
     EventEnvelope,
+    MailboxAcknowledgedPayload,
+    MailboxMessagePayload,
     MotiveFormedPayload,
     ProactiveIntentionPayload,
+    UserMessagePayload,
 )
 from self_cognition.core.proactivity import (
     BehavioralAction,
     BehavioralDecision,
     IntentionStatus,
+    MotiveProposal,
+    ProactivityModel,
     ProactiveIntention,
 )
 from self_cognition.core.protocols import EvidenceRepository, EventStore, GovernanceRepository
 from self_cognition.core.scopes import SubjectScope
+from self_cognition.core.workspace import WorkspacePacket
 from self_cognition.core.time import Clock, SYSTEM_CLOCK
+from self_cognition.core.ids import new_event_id
 from self_cognition.runtime.run_context import RunContext
 from self_cognition.observability.metrics import MetricsRegistry
 
@@ -43,11 +50,13 @@ class ProactiveIntentionService:
         evidence_repository: EvidenceRepository | None = None,
         governance: GovernanceRepository | None = None,
         metrics: MetricsRegistry | None = None,
+        model: ProactivityModel | None = None,
     ) -> None:
         self._events = event_store
         self._evidence = evidence_repository
         self._governance = governance
         self._metrics = metrics
+        self._model = model
 
     def form_motive(
         self,
@@ -70,6 +79,61 @@ class ProactiveIntentionService:
             self._metrics.increment("proactive.motives.formed")
         return event
 
+    def evaluate(
+        self,
+        event: EventEnvelope,
+        workspace: WorkspacePacket,
+        context: RunContext,
+    ) -> EventEnvelope | None:
+        if self._model is None:
+            return None
+        proposal = self._model.propose(event, workspace, context)
+        if not proposal.should_form:
+            return None
+        available = {
+            str(EvidenceRef.for_event(event).evidence_id),
+            *(str(ref.evidence_id) for ref in workspace.evidence_refs),
+        }
+        if not set(proposal.evidence_ids).issubset(available):
+            raise ContractValidationError("proactive motive cites unavailable evidence")
+        now = context.clock.now()
+        evidence = tuple(
+            ref
+            for ref in (EvidenceRef.for_event(event), *workspace.evidence_refs)
+            if str(ref.evidence_id) in proposal.evidence_ids
+        )
+        motive = Motive(
+            uuid4(),
+            event.subject.mind.mind_id,
+            proposal.kind,
+            proposal.description,
+            proposal.strength,
+            proposal.priority,
+            now,
+            (event.event_id,),
+        )
+        intention = ProactiveIntention(
+            uuid4(),
+            motive,
+            event.subject,
+            proposal.expected_behavior,
+            proposal.priority,
+            0,
+            evidence,
+            now,
+            now + timedelta(seconds=proposal.valid_for_seconds),
+            idempotency_key=(
+                f"model:{event.event_id}:{proposal.kind}:{proposal.expected_behavior}"
+            ),
+        )
+        if any(
+            isinstance(stored.payload, ProactiveIntentionPayload)
+            and stored.payload.intention.idempotency_key == intention.idempotency_key
+            for stored in self._read(SubjectScope.for_mind(event.subject.mind.mind_id))
+        ):
+            return None
+        return self.propose(intention, context=context)
+
     def propose(
         self,
         intention: ProactiveIntention,
@@ -80,7 +144,7 @@ class ProactiveIntentionService:
         existing = next(
             (
                 event
-                for event in self._events.read_by_subject(subject)
+                for event in self._read(subject)
                 if isinstance(event.payload, ProactiveIntentionPayload)
                 and event.payload.intention.intention_id == intention.intention_id
             ),
@@ -93,7 +157,7 @@ class ProactiveIntentionService:
         motive_event = next(
             (
                 event
-                for event in self._events.read_by_subject(subject)
+                for event in self._read(subject)
                 if isinstance(event.payload, MotiveFormedPayload)
                 and event.payload.motive.motive_id == intention.motive_id
             ),
@@ -133,7 +197,7 @@ class ProactiveIntentionService:
         existing = next(
             (
                 event
-                for event in self._events.read_by_subject(subject)
+                for event in self._read(subject)
                 if isinstance(event.payload, BehavioralDecisionPayload)
                 and event.payload.decision.decision_id == decision_id
             ),
@@ -156,7 +220,7 @@ class ProactiveIntentionService:
             response,
         )
         event = EventEnvelope.behavior_decided(
-            subject,
+            self._scope(subject),
             decision,
             clock=context.clock if context else SYSTEM_CLOCK,
             correlation_id=context.correlation_id if context else None,
@@ -175,12 +239,12 @@ class ProactiveIntentionService:
     ) -> tuple[ProactiveIntention, ...]:
         intentions = {
             event.payload.intention.intention_id: event.payload.intention
-            for event in self._events.read_by_subject(subject)
+            for event in self._read(subject)
             if isinstance(event.payload, ProactiveIntentionPayload)
         }
         decisions = {
             event.payload.intention_id: event.payload.decision
-            for event in self._events.read_by_subject(subject)
+            for event in self._read(subject)
             if isinstance(event.payload, BehavioralDecisionPayload)
         }
         result = []
@@ -209,6 +273,180 @@ class ProactiveIntentionService:
             self._metrics.set_gauge("proactive.active", float(len(result)))
             self._metrics.increment("proactive.silenced", len(intentions) - len(result))
         return tuple(sorted(result, key=lambda item: (-item.priority, item.intention_id.int)))
+
+    def consume_due(
+        self,
+        subject: SubjectScope,
+        *,
+        as_of: datetime,
+        context: RunContext | None = None,
+    ) -> tuple[ProactiveDecisionResult, ...]:
+        decisions = {
+            event.payload.intention_id: event.payload.decision
+            for event in self._read(subject)
+            if isinstance(event.payload, BehavioralDecisionPayload)
+        }
+        results: list[ProactiveDecisionResult] = []
+        for intention in self.active(subject, as_of=as_of):
+            decision = decisions.get(intention.intention_id)
+            if decision is not None and decision.action is not BehavioralAction.DELAY:
+                continue
+            if decision is not None and decision.not_before is not None and as_of < decision.not_before:
+                continue
+            result = self.decide(
+                subject,
+                intention.intention_id,
+                BehavioralAction.ACCEPT,
+                "scheduled proactive intention became due",
+                state_version=intention.state_version,
+                idempotency_key="scheduled-accept",
+                response=intention.expected_behavior,
+                context=context,
+            )
+            results.append(result)
+            self._create_mailbox_message(subject, result, context=context)
+        return tuple(results)
+
+    def observe_event(
+        self,
+        event: EventEnvelope,
+        *,
+        context: RunContext | None = None,
+    ) -> EventEnvelope | None:
+        payload = event.payload
+        if not isinstance(payload, UserMessagePayload):
+            return None
+        text = payload.text.strip()
+        prefixes = ("提醒我", "记得提醒我", "请提醒我")
+        prefix = next((item for item in prefixes if text.startswith(item)), None)
+        if prefix is None:
+            return None
+        description = text[len(prefix):].strip(" ：:，,")
+        if not description:
+            return None
+        now = context.clock.now() if context else event.recorded_at
+        target = event.subject
+        motive = Motive(
+            uuid4(),
+            target.mind.mind_id,
+            "user_request",
+            f"提醒：{description}",
+            0.9,
+            1,
+            now,
+            (event.event_id,),
+        )
+        intention = ProactiveIntention(
+            uuid4(),
+            motive,
+            target,
+            description,
+            1,
+            0,
+            (EvidenceRef.for_event(event),),
+            now,
+            now + timedelta(days=1),
+            idempotency_key=f"reminder:{event.event_id}",
+        )
+        return self.propose(intention, context=context)
+
+    def mailbox(
+        self,
+        subject: SubjectScope,
+        *,
+        as_of: datetime,
+    ) -> tuple[dict[str, object], ...]:
+        created = {
+            event.payload.intention_id: event.payload
+            for event in self._read(subject)
+            if isinstance(event.payload, MailboxMessagePayload)
+        }
+        acknowledged = {
+            event.payload.message_id
+            for event in self._read(subject)
+            if isinstance(event.payload, MailboxAcknowledgedPayload)
+        }
+        decisions = {
+            event.payload.intention_id: event.payload.decision
+            for event in self._read(subject)
+            if isinstance(event.payload, BehavioralDecisionPayload)
+        }
+        items: list[dict[str, object]] = []
+        for intention_id, message in created.items():
+            decision = decisions.get(intention_id)
+            if message.message_id in acknowledged:
+                status = "acknowledged"
+            elif decision is not None and decision.action is BehavioralAction.CANCEL:
+                status = "cancelled"
+            elif decision is not None and decision.action is BehavioralAction.EXPIRE:
+                status = "expired"
+            else:
+                status = "pending"
+            if message.valid_until <= as_of and status == "pending":
+                status = "expired"
+            items.append(
+                {
+                    "message_id": str(message.message_id),
+                    "intention_id": str(intention_id),
+                    "text": message.text,
+                    "status": status,
+                    "created_at": message.created_at.isoformat(),
+                    "valid_until": message.valid_until.isoformat(),
+                    "evidence_refs": [str(ref.evidence_id) for ref in message.evidence_refs],
+                }
+            )
+        return tuple(sorted(items, key=lambda item: str(item["created_at"])))
+
+    def acknowledge(
+        self,
+        subject: SubjectScope,
+        intention_id: UUID,
+        *,
+        context: RunContext | None = None,
+    ) -> ProactiveDecisionResult:
+        intention = self._find_intention(subject, intention_id)
+        message = next(
+            (
+                event.payload
+                for event in self._read(subject)
+                if isinstance(event.payload, MailboxMessagePayload)
+                and event.payload.intention_id == intention_id
+            ),
+            None,
+        )
+        if message is None:
+            raise ContractValidationError("proactive intention has no mailbox message")
+        result = self.decide(
+            subject,
+            intention_id,
+            BehavioralAction.EXECUTE,
+            "user acknowledged proactive message",
+            state_version=intention.state_version,
+            response=intention.expected_behavior,
+            idempotency_key="mailbox-acknowledged",
+            context=context,
+        )
+        existing = next(
+            (
+                event
+                for event in self._read(subject)
+                if isinstance(event.payload, MailboxAcknowledgedPayload)
+                and event.payload.message_id == message.message_id
+            ),
+            None,
+        )
+        if existing is None:
+            self._append(
+                EventEnvelope.mailbox_message_acknowledged(
+                    self._scope(subject),
+                    MailboxAcknowledgedPayload(message.message_id, intention_id),
+                    clock=context.clock if context else SYSTEM_CLOCK,
+                    causation_id=result.event.event_id,
+                    correlation_id=context.correlation_id if context else None,
+                    run_id=context.run_id if context else None,
+                )
+            )
+        return result
 
     def compete(
         self,
@@ -286,7 +524,7 @@ class ProactiveIntentionService:
         return self.decide(subject, intention_id, action, reason, context=context)
 
     def _find_intention(self, subject: SubjectScope, intention_id: UUID) -> ProactiveIntention:
-        for event in self._events.read_by_subject(subject):
+        for event in self._read(subject):
             if isinstance(event.payload, ProactiveIntentionPayload) and event.payload.intention.intention_id == intention_id:
                 return event.payload.intention
         raise ContractValidationError("unknown proactive intention")
@@ -295,3 +533,44 @@ class ProactiveIntentionService:
         self._events.append(event)
         if self._evidence is not None:
             self._evidence.append(EvidenceRef.for_event(event))
+
+    def _create_mailbox_message(
+        self,
+        subject: SubjectScope,
+        result: ProactiveDecisionResult,
+        *,
+        context: RunContext | None,
+    ) -> None:
+        if result.decision.response is None:
+            return
+        if any(
+            isinstance(event.payload, MailboxMessagePayload)
+            and event.payload.intention_id == result.intention.intention_id
+            for event in self._read(subject)
+        ):
+            return
+        payload = MailboxMessagePayload(
+            new_event_id(),
+            result.intention.intention_id,
+            result.decision.response,
+            result.intention.evidence_refs,
+            result.decision.decided_at,
+            result.intention.valid_until,
+        )
+        self._append(
+            EventEnvelope.mailbox_message_created(
+                self._scope(subject),
+                payload,
+                clock=context.clock if context else SYSTEM_CLOCK,
+                causation_id=result.event.event_id,
+                correlation_id=context.correlation_id if context else None,
+                run_id=context.run_id if context else None,
+            )
+        )
+
+    @staticmethod
+    def _scope(subject: SubjectScope) -> SubjectScope:
+        return SubjectScope.for_mind(subject.mind.mind_id)
+
+    def _read(self, subject: SubjectScope) -> tuple[EventEnvelope, ...]:
+        return self._events.read_by_subject(self._scope(subject))

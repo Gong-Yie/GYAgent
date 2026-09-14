@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from threading import Lock
+from typing import Callable
 from uuid import UUID
 
 from self_cognition.application.process_event import ProcessEventService
@@ -58,6 +59,7 @@ class SingleMachineEventBus:
         max_workers: int = 4,
         retry_policy: RetryPolicy = RetryPolicy(),
         metrics: MetricsRegistry | None = None,
+        after_success: Callable[[EventEnvelope, RunContext], None] | None = None,
     ) -> None:
         if max_workers < 1:
             raise ValueError("max_workers must be positive")
@@ -67,6 +69,7 @@ class SingleMachineEventBus:
         self._max_workers = max_workers
         self._retry_policy = retry_policy
         self._metrics = metrics
+        self._after_success = after_success
         self._subject_locks: dict[SubjectScope, Lock] = {}
         self._subject_locks_guard = Lock()
         self._accepting = True
@@ -176,6 +179,8 @@ class SingleMachineEventBus:
         result: ProcessEventResult,
     ) -> None:
         if result.status is ProcessEventStatus.SUCCEEDED:
+            if self._after_success is not None:
+                self._after_success(event, context)
             return
         if result.status is ProcessEventStatus.CANCELLED:
             self._process_event.finalize_cancellation(event, context)

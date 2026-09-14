@@ -99,6 +99,10 @@ class FileEventStore:
                 event for event in self._events if event.subject == subject
             )
 
+    def read_all(self) -> tuple[EventEnvelope, ...]:
+        with self._lock:
+            return tuple(self._events)
+
     def redact(
         self,
         subject: SubjectScope,

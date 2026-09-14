@@ -20,6 +20,12 @@ class OrchestrationResult:
     slow: Future[Any]
 
 
+@dataclass(frozen=True, slots=True)
+class FastBehaviorResponse:
+    text: str
+    intention_ids: tuple[str, ...] = ()
+
+
 class ExecutiveOrchestrator:
     """Coordinates the two loops while keeping model and tool decisions separate."""
 
@@ -64,5 +70,51 @@ class ExecutiveOrchestrator:
         slow = self._scheduler.submit_slow(event, context)
         return OrchestrationResult(fast, slow)
 
+    def fast_only(
+        self,
+        event: EventEnvelope,
+        context: RunContext,
+        *,
+        conversation_history: tuple[str, ...] = (),
+    ) -> FastBehaviorResult[Any]:
+        state = self._states.load(event.subject)
+        if state is None:
+            state = SubjectState.empty(
+                event.subject.subject.subject_id,
+                mind_id=event.subject.mind.mind_id,
+                subject_kind=event.subject.subject.kind,
+            )
+        intentions = self._intentions.active(
+            event.subject,
+            as_of=context.clock.now(),
+        )
+        return self._scheduler.fast.run(
+            event,
+            state,
+            intentions,
+            self._fast_handler,
+            conversation_history=conversation_history,
+        )
+
     def close(self) -> None:
         self._scheduler.close()
+
+
+def default_fast_handler(
+    event: EventEnvelope,
+    state: SubjectState,
+    intentions: tuple[ProactiveIntention, ...],
+) -> FastBehaviorResponse:
+    del state
+    if intentions:
+        intention = intentions[0]
+        return FastBehaviorResponse(
+            f"我先处理当前消息；还有一项待处理意图：{intention.expected_behavior}。",
+            tuple(str(item.intention_id) for item in intentions),
+        )
+    text = getattr(event.payload, "text", "")
+    return FastBehaviorResponse(
+        "我已收到这条消息，正在并行更新相关认知。"
+        if text
+        else "我已收到当前事件，正在并行处理。"
+    )

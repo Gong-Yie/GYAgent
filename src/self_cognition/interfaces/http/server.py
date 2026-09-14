@@ -102,7 +102,30 @@ def _handle(container: ApplicationContainer, method: str, path: str, query: dict
     if method == "GET" and path == "/traces":
         return {"spans": [_span_to_dict(span) for span in container.traces.spans()]}
     subject = _subject(body or {key: values[-1] for key, values in query.items()})
+    if method == "GET" and path == "/proactive":
+        as_of = SYSTEM_CLOCK.now()
+        intentions = container.proactive.active(subject, as_of=as_of)
+        return {
+            "as_of": as_of.isoformat(),
+            "intentions": [item.to_state_value() for item in intentions],
+        }
+    if method == "GET" and path == "/mailbox":
+        return {
+            "messages": list(
+                container.proactive.mailbox(subject, as_of=SYSTEM_CLOCK.now())
+            )
+        }
+    if method == "POST" and path.startswith("/mailbox/") and path.endswith("/ack"):
+        intention_id = UUID(path.split("/")[2])
+        result = container.proactive.acknowledge(subject, intention_id, context=_context())
+        return {
+            "status": result.decision.status.value,
+            "message_id": str(intention_id),
+            "reused": result.reused,
+        }
     if method == "POST" and path == "/chat":
+        if container.lifecycle.is_closed:
+            raise RuntimeError("application lifecycle is closed")
         text = _text(body, "message")
         context = _context()
         conversation_id = body.get("conversation_id")
@@ -112,6 +135,18 @@ def _handle(container: ApplicationContainer, method: str, path: str, query: dict
             raise ValueError("conversation_id must be a non-blank string")
         conversation = ConversationScope(conversation_id) if conversation_id else None
         event = EventEnvelope.user_message(subject, text, conversation=conversation, run_id=context.run_id, correlation_id=context.correlation_id)
+        if container.settings.worker_enabled:
+            container.event_bus.publish(event, context)
+            fast = container.orchestrator.fast_only(event, context)
+            value = fast.value
+            return {
+                "status": "accepted",
+                "run_id": str(context.run_id),
+                "correlation_id": str(context.correlation_id),
+                "slow_pending": True,
+                "response": value.text,
+                "intention_ids": list(value.intention_ids),
+            }
         result = container.converse.converse(DialogueRequest(event), context)
         return _converse(result)
     if method == "GET" and path == "/memories":

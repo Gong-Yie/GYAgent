@@ -305,6 +305,38 @@ class BehavioralDecisionPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class MailboxMessagePayload:
+    message_id: UUID
+    intention_id: UUID
+    text: str
+    evidence_refs: tuple[EvidenceRef, ...]
+    created_at: datetime
+    valid_until: datetime
+
+    def __post_init__(self) -> None:
+        from self_cognition.core.evidence import EvidenceRef
+
+        if not isinstance(self.message_id, UUID) or not isinstance(self.intention_id, UUID):
+            raise ContractValidationError("mailbox IDs must be UUID values")
+        if not isinstance(self.text, str) or not self.text.strip():
+            raise ContractValidationError("mailbox message must not be blank")
+        if any(not isinstance(ref, EvidenceRef) for ref in self.evidence_refs):
+            raise ContractValidationError("mailbox evidence is invalid")
+        _require_aware(self.created_at, "mailbox created_at")
+        _require_aware(self.valid_until, "mailbox valid_until")
+
+
+@dataclass(frozen=True, slots=True)
+class MailboxAcknowledgedPayload:
+    message_id: UUID
+    intention_id: UUID
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.message_id, UUID) or not isinstance(self.intention_id, UUID):
+            raise ContractValidationError("mailbox acknowledgement IDs must be UUID values")
+
+
+@dataclass(frozen=True, slots=True)
 class BehaviorModePayload:
     mode: str
     state_version: int
@@ -313,6 +345,17 @@ class BehaviorModePayload:
         _require_non_blank(self.mode, "behavior mode")
         if type(self.state_version) is not int or self.state_version < 0:
             raise ContractValidationError("behavior mode state version is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class ProactivityReassessmentPayload:
+    wake_reason: str
+    previous_assessment_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        _require_non_blank(self.wake_reason, "wake_reason")
+        if self.previous_assessment_at is not None:
+            _require_aware(self.previous_assessment_at, "previous_assessment_at")
 
 
 EventPayload = (
@@ -333,6 +376,7 @@ EventPayload = (
     | ProactiveIntentionPayload
     | BehavioralDecisionPayload
     | BehaviorModePayload
+    | ProactivityReassessmentPayload
     | GoalRequestedPayload
     | PlanningContextPayload
     | GoalPlannedPayload
@@ -401,8 +445,11 @@ class EventEnvelope:
             "action.result": ActionResultPayload,
             "motive.formed": MotiveFormedPayload,
             "proactive.intention": ProactiveIntentionPayload,
+            "proactive.message.created": MailboxMessagePayload,
+            "proactive.message.acknowledged": MailboxAcknowledgedPayload,
             "behavior.decided": BehavioralDecisionPayload,
             "behavior.mode_switched": BehaviorModePayload,
+            "proactivity.reassessment": ProactivityReassessmentPayload,
         }
         payload_type = expected_payloads.get(self.event_type)
         if payload_type is None or not isinstance(self.payload, payload_type):
@@ -560,6 +607,8 @@ class EventEnvelope:
             (
                 MotiveFormedPayload,
                 ProactiveIntentionPayload,
+                MailboxMessagePayload,
+                MailboxAcknowledgedPayload,
                 BehavioralDecisionPayload,
                 BehaviorModePayload,
             ),
@@ -669,7 +718,12 @@ class EventEnvelope:
     def _validate_proactive_control(self) -> None:
         if self.subject.subject.kind is not SubjectKind.MIND:
             raise ContractValidationError("proactive events must target a mind subject")
-        if self.source is not EventSource.SYSTEM or self.actor is not None:
+        if isinstance(self.payload, MailboxAcknowledgedPayload):
+            if self.source is not EventSource.USER or self.actor is not None:
+                raise ContractValidationError(
+                    "mailbox acknowledgement must be a user event"
+                )
+        elif self.source is not EventSource.SYSTEM or self.actor is not None:
             raise ContractValidationError("proactive events must be system events")
         payload = self.payload
         if isinstance(payload, MotiveFormedPayload):
@@ -1026,6 +1080,62 @@ class EventEnvelope:
         )
 
     @classmethod
+    def mailbox_message_created(
+        cls,
+        subject: SubjectScope,
+        payload: MailboxMessagePayload,
+        *,
+        clock: Clock = SYSTEM_CLOCK,
+        causation_id: UUID | None = None,
+        correlation_id: UUID | None = None,
+        run_id: UUID | None = None,
+    ) -> "EventEnvelope":
+        owner = SubjectScope.for_mind(subject.mind.mind_id)
+        now = clock.now()
+        return cls(
+            payload.message_id,
+            "proactive.message.created",
+            None,
+            owner,
+            payload,
+            now,
+            now,
+            EventSource.SYSTEM,
+            DataScope(owner, DisclosureScope.MIND),
+            causation_id=causation_id,
+            correlation_id=correlation_id,
+            run_id=run_id,
+        )
+
+    @classmethod
+    def mailbox_message_acknowledged(
+        cls,
+        subject: SubjectScope,
+        payload: MailboxAcknowledgedPayload,
+        *,
+        clock: Clock = SYSTEM_CLOCK,
+        causation_id: UUID | None = None,
+        correlation_id: UUID | None = None,
+        run_id: UUID | None = None,
+    ) -> "EventEnvelope":
+        owner = SubjectScope.for_mind(subject.mind.mind_id)
+        now = clock.now()
+        return cls(
+            new_event_id(),
+            "proactive.message.acknowledged",
+            None,
+            owner,
+            payload,
+            now,
+            now,
+            EventSource.USER,
+            DataScope(owner, DisclosureScope.MIND),
+            causation_id=causation_id,
+            correlation_id=correlation_id,
+            run_id=run_id,
+        )
+
+    @classmethod
     def behavior_mode_switched(
         cls,
         subject: SubjectScope,
@@ -1052,6 +1162,26 @@ class EventEnvelope:
             DataScope(subject, DisclosureScope.MIND),
             correlation_id=correlation_id,
             run_id=run_id,
+        )
+
+    @classmethod
+    def proactivity_reassessment(
+        cls,
+        subject: SubjectScope,
+        wake_reason: str,
+        *,
+        previous_assessment_at: datetime | None = None,
+        clock: Clock = SYSTEM_CLOCK,
+        correlation_id: UUID | None = None,
+        run_id: UUID | None = None,
+    ) -> "EventEnvelope":
+        owner = SubjectScope.for_mind(subject.mind.mind_id)
+        now = clock.now()
+        return cls(
+            new_event_id(), "proactivity.reassessment", None, owner,
+            ProactivityReassessmentPayload(wake_reason, previous_assessment_at),
+            now, now, EventSource.SYSTEM, DataScope(owner, DisclosureScope.MIND),
+            correlation_id=correlation_id, run_id=run_id,
         )
 
     @classmethod

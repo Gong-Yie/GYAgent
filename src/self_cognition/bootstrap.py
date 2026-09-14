@@ -1,4 +1,5 @@
 from dataclasses import dataclass, replace
+from datetime import timedelta
 from pathlib import Path
 
 from self_cognition.application.execute_action import ActionService
@@ -8,7 +9,8 @@ from self_cognition.application.pursue_goal import PursueGoalService
 from self_cognition.application.proactive import ProactiveIntentionService
 from self_cognition.application.user_control import UserControlService
 from self_cognition.core.actions import ActionModel
-from self_cognition.core.dialogue import DialogueModel
+from self_cognition.core.dialogue import DialogueModel, DialogueRequest
+from self_cognition.core.events import EventEnvelope
 from self_cognition.core.plans import PlanningModel
 from self_cognition.executive.dialogue.fake import RuleDialogueAdapter
 from self_cognition.application.replay import ReplayService
@@ -52,6 +54,9 @@ from self_cognition.core.protocols import (
     GovernanceRepository,
     StateRepository,
 )
+from self_cognition.core.proactivity import ProactivityModel
+from self_cognition.core.state import SubjectState
+from self_cognition.core.scopes import SubjectScope
 from self_cognition.core.workspace import WorkspaceBuilder
 from self_cognition.cognition.semantic.concept_pattern_extractor import (
     ConceptPatternExtractor,
@@ -96,6 +101,9 @@ from self_cognition.runtime.event_bus import SingleMachineEventBus
 from self_cognition.runtime.recovery import RunRecoveryService
 from self_cognition.runtime.run_service import RunLifecycle
 from self_cognition.runtime.scheduler import DualLoopScheduler
+from self_cognition.runtime.run_context import RunContext
+from self_cognition.workers.scheduler import SchedulerWorker
+from self_cognition.core.ids import new_correlation_id, new_run_id
 from self_cognition.runtime.health import HealthService
 from self_cognition.observability.metrics import MetricsRegistry
 from self_cognition.observability.tracing import TraceRecorder
@@ -115,10 +123,16 @@ from self_cognition.infrastructure.llm.dialogue_responses import (
 from self_cognition.infrastructure.llm.openai_responses import (
     OpenAIResponsesCognitionModel,
 )
+from self_cognition.infrastructure.llm.proactive_responses import (
+    OpenAIResponsesProactivityModel,
+)
 from self_cognition.infrastructure.llm.planning_responses import (
     OpenAIResponsesPlanningModel,
 )
-from self_cognition.executive.orchestrator import ExecutiveOrchestrator
+from self_cognition.executive.orchestrator import (
+    ExecutiveOrchestrator,
+    default_fast_handler,
+)
 from self_cognition.lifecycle import ApplicationLifecycle
 from self_cognition.memory.encoder import StateChangeMemoryEncoder
 from self_cognition.memory.behavior import (
@@ -197,6 +211,7 @@ def build_container(
     metacognition_model: CognitionModel | None = None,
     affect_model: CognitionModel | None = None,
     semantic_model: CognitionModel | None = None,
+    proactive_model: ProactivityModel | None = None,
 ) -> ApplicationContainer:
     resolved_settings = settings or load_settings(dotenv_path)
     if data_dir is not None:
@@ -219,6 +234,13 @@ def build_container(
         if action_model is None:
             action_model = OpenAIResponsesActionModel.from_api_key(
                 api_key, model, base_url=base_url
+            )
+        if openai_configuration is not None and proactive_model is None:
+            proactive_model = OpenAIResponsesProactivityModel.from_api_key(
+                api_key,
+                model,
+                base_url=base_url,
+                max_output_tokens=resolved_settings.cognition_max_output_tokens,
             )
         if module_registrations is None and metacognition_model is None:
             metacognition_model = OpenAIResponsesCognitionModel.from_api_key(
@@ -307,9 +329,56 @@ def build_container(
         evidence_repository,
         governance,
         metrics,
+        proactive_model,
     )
+    wake_subjects: set[SubjectScope] = {
+        event.subject
+        for event in event_store.read_all()
+        if event.event_type in {"user.message", "proactive.intention", "motive.formed"}
+    }
+    last_reassessment = {
+        event.subject: event.recorded_at
+        for event in event_store.read_all()
+        if event.event_type == "proactivity.reassessment"
+    }
+
+    def wake_due_intentions() -> None:
+        now = SYSTEM_CLOCK.now()
+        for subject in tuple(wake_subjects):
+            context = RunContext(
+                new_run_id(),
+                new_correlation_id(),
+                now + timedelta(seconds=30),
+            )
+            proactive.consume_due(subject, as_of=now, context=context)
+            active = proactive.active(subject, as_of=now)
+            if not active:
+                continue
+            previous = last_reassessment.get(subject)
+            if previous is not None and now - previous < timedelta(minutes=1):
+                continue
+            event = EventEnvelope.proactivity_reassessment(
+                subject,
+                "time.tick",
+                previous_assessment_at=previous,
+                clock=context.clock,
+                correlation_id=context.correlation_id,
+                run_id=context.run_id,
+            )
+            event_store.append(event)
+            last_reassessment[subject] = event.recorded_at
+            state = state_repository.load(subject) or SubjectState.empty(
+                subject.subject.subject_id,
+                mind_id=subject.mind.mind_id,
+                subject_kind=subject.subject.kind,
+            )
+            workspace = workspace_builder.build(
+                f"时间唤醒：{now.isoformat()}", state
+            )
+            proactive.evaluate(event, workspace, context)
+
     scheduler = DualLoopScheduler(
-        process_event.process,
+        lambda event, context: converse.converse(DialogueRequest(event), context),
         metrics=metrics,
         traces=traces,
     )
@@ -317,13 +386,31 @@ def build_container(
         state_repository,
         proactive,
         scheduler,
+        fast_handler=default_fast_handler,
     )
+    def after_success(event: EventEnvelope, context: RunContext) -> None:
+        wake_subjects.add(event.subject)
+        observed = proactive.observe_event(event, context=context)
+        state = state_repository.load(event.subject)
+        if state is None:
+            state = SubjectState.empty(
+                event.subject.subject.subject_id,
+                mind_id=event.subject.mind.mind_id,
+                subject_kind=event.subject.subject.kind,
+            )
+        if observed is None and getattr(event.payload, "text", None):
+            workspace = workspace_builder.build(event.payload.text, state)
+            proactive.evaluate(event, workspace, context)
+        if event.event_type == "user.message":
+            converse.converse(DialogueRequest(event), context)
+
     event_bus = SingleMachineEventBus(
         event_store,
         process_journal,
         process_event,
         max_workers=resolved_settings.worker_max_workers,
         metrics=metrics,
+        after_success=after_success,
     )
     replay = ReplayService(event_store=event_store, engine=engine)
     forget = ForgetService(
@@ -398,6 +485,10 @@ def build_container(
         proactive,
         layout.exports,
     )
+    wake_worker = SchedulerWorker(
+        (wake_due_intentions,),
+        interval_seconds=resolved_settings.worker_poll_interval_seconds,
+    )
     lifecycle = ApplicationLifecycle(
         event_bus,
         worker_enabled=resolved_settings.worker_enabled,
@@ -413,6 +504,7 @@ def build_container(
             selected_planning_model,
             selected_action_model,
             scheduler,
+            *((wake_worker,) if resolved_settings.worker_enabled else ()),
         ),
     )
     health = HealthService(

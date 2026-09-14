@@ -57,6 +57,9 @@ from self_cognition.core.events import (
     ProactiveIntentionPayload,
     BehavioralDecisionPayload,
     BehaviorModePayload,
+    MailboxMessagePayload,
+    MailboxAcknowledgedPayload,
+    ProactivityReassessmentPayload,
 )
 from self_cognition.core.identity import (
     CapabilityRecord,
@@ -738,8 +741,30 @@ def _event_payload_to_dict(
             "intention_id": str(payload.intention_id),
             "decision": _decision_to_dict(payload.decision),
         }
+    if isinstance(payload, MailboxMessagePayload):
+        return {
+            "message_id": str(payload.message_id),
+            "intention_id": str(payload.intention_id),
+            "text": payload.text,
+            "evidence_refs": [_evidence_ref_to_dict(ref) for ref in payload.evidence_refs],
+            "created_at": payload.created_at.isoformat(),
+            "valid_until": payload.valid_until.isoformat(),
+        }
+    if isinstance(payload, MailboxAcknowledgedPayload):
+        return {
+            "message_id": str(payload.message_id),
+            "intention_id": str(payload.intention_id),
+        }
     if isinstance(payload, BehaviorModePayload):
         return {"mode": payload.mode, "state_version": payload.state_version}
+    if isinstance(payload, ProactivityReassessmentPayload):
+        return {
+            "wake_reason": payload.wake_reason,
+            "previous_assessment_at": (
+                payload.previous_assessment_at.isoformat()
+                if payload.previous_assessment_at is not None else None
+            ),
+        }
     return {
         "old_version": payload.old_version,
         "new_version": payload.new_version,
@@ -1193,11 +1218,37 @@ def _event_payload_from_dict(
             intention_id,
             _decision_from_dict(values["decision"], f"{path}.decision"),
         )
+    if event_type == "proactive.message.created":
+        _require_keys(values, {"message_id", "intention_id", "text", "evidence_refs", "created_at", "valid_until"}, path)
+        refs = values["evidence_refs"]
+        if not isinstance(refs, list):
+            raise MalformedSerializedDataError(f"{path}.evidence_refs must be an array")
+        return MailboxMessagePayload(
+            _require_uuid(values["message_id"], f"{path}.message_id"),
+            _require_uuid(values["intention_id"], f"{path}.intention_id"),
+            _require_non_blank_string(values["text"], f"{path}.text"),
+            tuple(_evidence_ref_from_dict(item, f"{path}.evidence_refs[{index}]") for index, item in enumerate(refs)),
+            _require_datetime(values["created_at"], f"{path}.created_at"),
+            _require_datetime(values["valid_until"], f"{path}.valid_until"),
+        )
+    if event_type == "proactive.message.acknowledged":
+        _require_keys(values, {"message_id", "intention_id"}, path)
+        return MailboxAcknowledgedPayload(
+            _require_uuid(values["message_id"], f"{path}.message_id"),
+            _require_uuid(values["intention_id"], f"{path}.intention_id"),
+        )
     if event_type == "behavior.mode_switched":
         _require_keys(values, {"mode", "state_version"}, path)
         return BehaviorModePayload(
             _require_non_blank_string(values["mode"], f"{path}.mode"),
             _require_int(values["state_version"], f"{path}.state_version"),
+        )
+    if event_type == "proactivity.reassessment":
+        _require_keys(values, {"wake_reason", "previous_assessment_at"}, path)
+        previous = values["previous_assessment_at"]
+        return ProactivityReassessmentPayload(
+            _require_non_blank_string(values["wake_reason"], f"{path}.wake_reason"),
+            None if previous is None else _require_datetime(previous, f"{path}.previous_assessment_at"),
         )
     raise MalformedSerializedDataError(
         "event.event_type is not supported by this schema"
