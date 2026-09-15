@@ -224,8 +224,10 @@ class OpenAIResponsesCognitionModel:
                 "cognition_type must match status and basis: known and direct is "
                 "fact; known and inference, or unknown status, is inference; "
                 "unknown status with unknown basis is unknown. The top-level "
-                "object must contain exactly candidates. Do not return or repeat "
-                "the schema definition."
+                "object must contain exactly candidates. Every candidate must "
+                "include confidence and evidence_ids inside the candidate; do not "
+                "place those fields at the top level. Do not return or repeat the "
+                "schema definition."
             )
             repair_input = (
                 f"\nprevious_output={previous_raw}"
@@ -334,12 +336,18 @@ class OpenAIResponsesCognitionModel:
         raw_candidates = payload.get("candidates")
         if not isinstance(raw_candidates, list):
             return {"candidates": raw_candidates}
+        recover_top_level = len(raw_candidates) == 1
         candidates: list[object] = []
         for candidate in raw_candidates:
             if not isinstance(candidate, dict):
                 candidates.append(candidate)
                 continue
             updated = dict(candidate)
+            if recover_top_level:
+                if "confidence" not in updated and "confidence" in payload:
+                    updated["confidence"] = payload["confidence"]
+                if "evidence_ids" not in updated and "evidence_ids" in payload:
+                    updated["evidence_ids"] = payload["evidence_ids"]
             evidence_ids = updated.get("evidence_ids")
             if isinstance(evidence_ids, list):
                 valid = [

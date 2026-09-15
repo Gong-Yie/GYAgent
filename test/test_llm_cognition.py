@@ -447,3 +447,40 @@ def test_incomplete_status_with_valid_structured_output_is_accepted():
 
     assert len(responses.calls) == 1
     assert contributions[0].value == "晚上"
+
+def test_single_candidate_recovers_top_level_confidence_and_evidence_ids():
+    event = Event.user_message("user-1", "我喜欢晚上学习")
+    output = json.dumps(
+        {
+            "candidates": [
+                {
+                    "target_field": "preferences.study_time",
+                    "operation": "set",
+                    "cognition_type": "preference",
+                    "value": "晚上",
+                }
+            ],
+            "confidence": 1.0,
+            "evidence_ids": [str(event.event_id)],
+        },
+        ensure_ascii=False,
+    )
+    responses = SequenceResponses(
+        [
+            SimpleNamespace(
+                id="resp-top-level-candidate-fields",
+                output_text=output,
+                status="completed",
+            )
+        ]
+    )
+    model = OpenAIResponsesCognitionModel(
+        SimpleNamespace(responses=responses),
+        "test-model",
+    )
+
+    contributions = LLMSemanticExtractor(model).process(event, make_context())
+
+    assert len(responses.calls) == 1
+    assert contributions[0].target_field == "preferences.study_time"
+    assert contributions[0].value == "晚上"
