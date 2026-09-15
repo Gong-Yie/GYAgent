@@ -35,7 +35,7 @@ from self_cognition.observability.metrics import MetricsRegistry
 
 
 SOCIAL_CONNECTION_KIND = "social_connection"
-SOCIAL_CONNECTION_COOLDOWN = timedelta(minutes=30)
+PROACTIVE_KIND_COOLDOWN = timedelta(minutes=30)
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,7 +62,7 @@ class ProactiveIntentionService:
         self._governance = governance
         self._metrics = metrics
         self._model = model
-        self._social_lock = RLock()
+        self._proposal_lock = RLock()
 
     def form_motive(
         self,
@@ -139,12 +139,11 @@ class ProactiveIntentionService:
             for stored in self._read(mind)
         ):
             return None
-        if self._is_social_kind(proposal.kind):
-            with self._social_lock:
-                if self._recent_social_intention(mind, now):
-                    return None
-                return self.propose(intention, context=context)
-        return self.propose(intention, context=context)
+        family = self._kind_family(proposal.kind)
+        with self._proposal_lock:
+            if self._recent_equivalent_intention(mind, family, now):
+                return None
+            return self.propose(intention, context=context)
 
     def propose(
         self,
@@ -373,8 +372,12 @@ class ProactiveIntentionService:
             return None
         now = context.clock.now() if context is not None else event.recorded_at
         mind = SubjectScope.for_mind(event.subject.mind.mind_id)
-        with self._social_lock:
-            if self._recent_social_intention(mind, now):
+        with self._proposal_lock:
+            if self._recent_equivalent_intention(
+                mind,
+                self._kind_family(SOCIAL_CONNECTION_KIND),
+                now,
+            ):
                 return None
             motive = Motive(
                 uuid4(),
@@ -592,26 +595,39 @@ class ProactiveIntentionService:
     ) -> ProactiveDecisionResult:
         return self.decide(subject, intention_id, action, reason, context=context)
 
-    def _recent_social_intention(
+    def _recent_equivalent_intention(
         self,
         mind: SubjectScope,
+        family: str,
         as_of: datetime,
     ) -> bool:
         return any(
             isinstance(stored.payload, ProactiveIntentionPayload)
-            and self._is_social_kind(
+            and self._kind_family(
                 stored.payload.intention.motive.kind
             )
+            == family
             and stored.payload.intention.valid_until > as_of
             and stored.payload.intention.created_at
-            > as_of - SOCIAL_CONNECTION_COOLDOWN
+            > as_of - PROACTIVE_KIND_COOLDOWN
             for stored in self._read(mind)
         )
 
     @staticmethod
-    def _is_social_kind(kind: str) -> bool:
-        normalized = kind.strip().lower()
-        return "social" in normalized or "connection" in normalized
+    def _kind_family(kind: str) -> str:
+        normalized = kind.strip().lower().replace("-", "_")
+        if "goal" in normalized:
+            return "goal_followup"
+        if "commit" in normalized or "remind" in normalized:
+            return "commitment_reminder"
+        if (
+            "social" in normalized
+            or "connection" in normalized
+            or "check_in" in normalized
+            or "chat" in normalized
+        ):
+            return "social_connection"
+        return normalized.removeprefix("proactive_")
 
     def _find_intention(self, subject: SubjectScope, intention_id: UUID) -> ProactiveIntention:
         for event in self._read(subject):

@@ -380,3 +380,50 @@ def test_long_term_model_social_proposals_respect_cooldown():
     assert service.evaluate(third, workspace, _context(clock)) is not None
 
     assert len(service.active(subject, as_of=clock.now())) == 1
+
+
+class GoalProactivityModel:
+    def __init__(self):
+        self.calls = 0
+
+    def propose(self, event, workspace, context):
+        del workspace, context
+        kinds = ("proactive_goal_monitoring", "monitor_long_term_goal")
+        kind = kinds[min(self.calls, len(kinds) - 1)]
+        self.calls += 1
+        return MotiveProposal(
+            True,
+            kind,
+            "长期目标关注",
+            "持续关注长期目标",
+            0.8,
+            1,
+            3600,
+            (str(event.event_id),),
+        )
+
+    def express(self, intention, workspace, context):
+        del intention, workspace, context
+        return "目标进展如何？"
+
+
+def test_long_term_goal_proposals_share_cooldown_family():
+    clock = FixedClock(T0)
+    model = GoalProactivityModel()
+    service = ProactiveIntentionService(InMemoryEventStore(), model=model)
+    user = "model-goal-user"
+    subject = SubjectScope.legacy_user(user)
+    workspace = _workspace(user, bored=False)
+
+    first = EventEnvelope.user_message(user, "请留意长期目标", clock=clock)
+    assert service.evaluate(first, workspace, _context(clock)) is not None
+
+    clock.advance(timedelta(minutes=5))
+    second = EventEnvelope.user_message(user, "请继续留意长期目标", clock=clock)
+    assert service.evaluate(second, workspace, _context(clock)) is None
+
+    clock.advance(timedelta(minutes=30))
+    third = EventEnvelope.user_message(user, "再留意一下长期目标", clock=clock)
+    assert service.evaluate(third, workspace, _context(clock)) is not None
+
+    assert len(service.active(subject, as_of=clock.now())) == 2

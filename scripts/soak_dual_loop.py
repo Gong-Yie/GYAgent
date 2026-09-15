@@ -26,10 +26,10 @@ from self_cognition.settings import load_settings
 
 
 NEUTRAL_MESSAGES = (
-    "我还在继续观察长期运行状态",
-    "今天继续记录这个项目的进展",
-    "请保持前面的连续性",
-    "帮我留意一下长期目标",
+    "你好，我只是来看看",
+    "今天过得还行",
+    "好的，我知道了",
+    "嗯，先这样",
 )
 
 
@@ -92,7 +92,7 @@ def _write_summary(path: Path, summary: dict[str, object]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Real dual-loop soak runner")
     parser.add_argument("--minutes", type=int, default=30)
-    parser.add_argument("--interval-seconds", type=float, default=120.0)
+    parser.add_argument("--interval-seconds", type=float, default=180.0)
     parser.add_argument("--snapshot-seconds", type=float, default=60.0)
     parser.add_argument("--user", default="soak-user")
     parser.add_argument("--data-dir", type=Path, default=None)
