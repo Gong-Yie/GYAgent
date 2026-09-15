@@ -40,6 +40,7 @@ from self_cognition.core.workspace import (
     WorkspaceRunInfo,
     workspace_model_context,
 )
+from self_cognition.executive.dialogue.review_policy import ReviewPolicy
 from self_cognition.executive.dialogue.grounding import (
     is_plain_smalltalk,
     validate_grounding,
@@ -58,6 +59,7 @@ class ConverseService:
         state_repository: StateRepository,
         workspace_builder: WorkspaceBuilder,
         model: DialogueModel,
+        review_policy: ReviewPolicy | None = None,
     ) -> None:
         self._process_event = process_event
         self._events = event_store
@@ -65,6 +67,7 @@ class ConverseService:
         self._states = state_repository
         self._builder = workspace_builder
         self._model = model
+        self._review_policy = review_policy or ReviewPolicy()
         self._lock = RLock()
 
     def converse(self, request: DialogueRequest, context: RunContext) -> ConverseResult:
@@ -259,7 +262,8 @@ class ConverseService:
                     self._ensure_active(context)
                     self._require_unchanged(workspace, payload.workspace_json)
                     review = review_from_dict(parse_model_json(repaired.raw_output))
-                if not review.supported:
+                decision = self._review_policy.decide(review, workspace)
+                if not decision.accepted:
                     return self._failure(
                         origin,
                         cause,
