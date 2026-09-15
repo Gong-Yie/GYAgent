@@ -200,7 +200,12 @@ def main(argv: list[str] | None = None) -> int:
         if item.get("worker_error_type")
     ]
     max_backlog = max(int(item["backlog"]) for item in snapshots)
+    module_degradation_counts: Counter[str] = Counter()
+    module_degradation_reasons: Counter[str] = Counter()
+    module_recovery_counts: Counter[str] = Counter()
+    model_unhealthy_counts: Counter[str] = Counter()
     model_degradation_reasons: Counter[str] = Counter()
+    previous_degraded_modules: set[str] = set()
     for item in snapshots:
         health = item.get("health", {})
         if not isinstance(health, dict):
@@ -208,18 +213,40 @@ def main(argv: list[str] | None = None) -> int:
         components = health.get("components", ())
         if not isinstance(components, list):
             continue
+        current_degraded_modules: set[str] = set()
         for component in components:
-            if not isinstance(component, dict) or component.get("name") != "models":
+            if not isinstance(component, dict):
                 continue
+            name = component.get("name")
             details = component.get("details", ())
             if not isinstance(details, list):
                 continue
-            for detail in details:
-                if not isinstance(detail, dict) or detail.get("healthy"):
-                    continue
-                reason = detail.get("degraded_reason")
-                if reason:
-                    model_degradation_reasons[str(reason)] += 1
+            if name == "modules":
+                for detail in details:
+                    if not isinstance(detail, dict) or detail.get("health") != "degraded":
+                        continue
+                    module_id = str(detail.get("module_id", "unknown"))
+                    reason = detail.get("degraded_reason")
+                    module_degradation_counts[module_id] += 1
+                    current_degraded_modules.add(module_id)
+                    if reason:
+                        module_degradation_reasons[
+                            f"{module_id}:{reason}"
+                        ] += 1
+            elif name == "models":
+                for detail in details:
+                    if not isinstance(detail, dict) or detail.get("healthy"):
+                        continue
+                    task = str(detail.get("task", "unknown"))
+                    reason = detail.get("degraded_reason")
+                    model_unhealthy_counts[task] += 1
+                    if reason:
+                        model_degradation_reasons[
+                            f"{task}:{reason}"
+                        ] += 1
+        for module_id in previous_degraded_modules - current_degraded_modules:
+            module_recovery_counts[module_id] += 1
+        previous_degraded_modules = current_degraded_modules
 
     final_mailbox = container.proactive.mailbox(subject, as_of=SYSTEM_CLOCK.now())
     final_active = container.proactive.active(subject, as_of=SYSTEM_CLOCK.now())
@@ -240,6 +267,11 @@ def main(argv: list[str] | None = None) -> int:
         "final_backlog": len(container.event_bus.backlog()),
         "dead_letters": len(container.event_bus.dead_letters()),
         "worker_error_types": sorted(set(worker_errors)),
+        "final_ready_before_stop": bool(snapshots[-1]["health"]["ready"]),
+        "module_degradation_counts": dict(module_degradation_counts),
+        "module_degradation_reasons": dict(module_degradation_reasons),
+        "module_recovery_counts": dict(module_recovery_counts),
+        "model_unhealthy_counts": dict(model_unhealthy_counts),
         "model_degradation_reasons": dict(model_degradation_reasons),
         "mailbox_count": len(final_mailbox),
         "mailbox": final_mailbox,
