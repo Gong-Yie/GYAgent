@@ -233,6 +233,7 @@ def build_container(
                 api_key,
                 model,
                 base_url=base_url,
+                max_output_tokens=resolved_settings.cognition_max_output_tokens,
                 temperature=resolved_settings.model_temperature,
             )
         if action_model is None:
@@ -240,6 +241,7 @@ def build_container(
                 api_key,
                 model,
                 base_url=base_url,
+                max_output_tokens=resolved_settings.cognition_max_output_tokens,
                 temperature=resolved_settings.model_temperature,
             )
         if openai_configuration is not None and proactive_model is None:

@@ -353,19 +353,15 @@ class PursueGoalService:
         self._persist_model_response(
             request.owner, output, context, context_event.event_id
         )
+        error = None
         if output.error_type is not None:
-            return self._failure(
-                request.owner,
-                None,
-                context,
-                "create",
-                output.error_type,
-                request.request_id,
-                request.goal.goal_id,
-            )
-        try:
-            plan = self._created_plan(request, output, context)
-        except (ContractValidationError, ModelOutputError) as error:
+            error = ModelOutputError(output.error_type)
+        else:
+            try:
+                plan = self._created_plan(request, output, context)
+            except (ContractValidationError, ModelOutputError) as caught:
+                error = caught
+        if error is not None:
             try:
                 plan = self._repair_created_plan(
                     request,

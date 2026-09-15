@@ -96,6 +96,7 @@ class OpenAIResponsesPlanningModel:
         model: str,
         *,
         base_url: str | None = None,
+        max_output_tokens: int = 2048,
         temperature: float = 0.0,
     ) -> "OpenAIResponsesPlanningModel":
         from openai import OpenAI
@@ -103,6 +104,7 @@ class OpenAIResponsesPlanningModel:
         return cls(
             OpenAI(api_key=api_key, base_url=base_url, max_retries=0),
             model,
+            max_output_tokens=max_output_tokens,
             temperature=temperature,
         )
 
