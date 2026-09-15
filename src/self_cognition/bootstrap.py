@@ -571,7 +571,11 @@ def _default_module_registrations(
                 else "semantic.preference_extractor"
             ),
             "semantic",
-            "2" if semantic_model is not None else PreferenceExtractor.module_version,
+            (
+                LLMSemanticExtractor.module_version
+                if semantic_model is not None
+                else PreferenceExtractor.module_version
+            ),
             LLMSemanticExtractor(semantic_model)
             if semantic_model is not None
             else PreferenceExtractor(),

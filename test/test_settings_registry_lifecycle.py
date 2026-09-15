@@ -201,6 +201,8 @@ def test_build_container_uses_one_openai_model_for_all_default_agents(
     )
 
     assert all(model._model == "shared-model" for model in configured_models)
+    for status in container.module_registry.statuses():
+        assert status.version == modules[status.module_id].module_version
     assert calls == [
         {
             "api_key": "test-key",
