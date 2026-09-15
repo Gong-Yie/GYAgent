@@ -97,11 +97,60 @@ class DialogueDraft:
 class GroundingReview:
     supported: bool
     reason: str
+    social_response: bool = False
+    unsupported_claims: tuple[str, ...] = ()
+    uncertain_claims: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.supported) is not bool:
             raise ContractValidationError("grounding supported must be boolean")
+        if type(self.social_response) is not bool:
+            raise ContractValidationError(
+                "grounding social_response must be boolean"
+            )
         _text(self.reason, "grounding reason")
+        for name in ("unsupported_claims", "uncertain_claims"):
+            values = getattr(self, name)
+            if not isinstance(values, tuple) or any(
+                not isinstance(value, str) or not value.strip()
+                for value in values
+            ):
+                raise ContractValidationError(
+                    f"grounding {name} must be text values"
+                )
+
+    def to_state_value(self) -> dict[str, object]:
+        return {
+            "supported": self.supported,
+            "reason": self.reason,
+            "social_response": self.social_response,
+            "unsupported_claims": list(self.unsupported_claims),
+            "uncertain_claims": list(self.uncertain_claims),
+        }
+
+    @classmethod
+    def from_state_value(cls, value: object) -> "GroundingReview":
+        if not isinstance(value, dict):
+            raise ContractValidationError("grounding review must be an object")
+        supported = value.get("supported")
+        reason = value.get("reason")
+        social_response = value.get("social_response", False)
+        unsupported = value.get("unsupported_claims", ())
+        uncertain = value.get("uncertain_claims", ())
+        if isinstance(unsupported, list):
+            unsupported = tuple(unsupported)
+        if isinstance(uncertain, list):
+            uncertain = tuple(uncertain)
+        try:
+            return cls(
+                supported,
+                reason,
+                social_response,
+                tuple(unsupported),
+                tuple(uncertain),
+            )
+        except (TypeError, ValueError) as error:
+            raise ContractValidationError("invalid grounding review") from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,9 +264,18 @@ def draft_from_dict(value: object) -> DialogueDraft:
 
 
 def review_from_dict(value: object) -> GroundingReview:
-    values = _object(value, {"supported", "reason"})
+    if not isinstance(value, dict):
+        raise ModelOutputError("invalid grounding output")
+    required = {"supported", "reason"}
+    allowed = required | {
+        "social_response",
+        "unsupported_claims",
+        "uncertain_claims",
+    }
+    if not required <= set(value) or set(value) - allowed:
+        raise ModelOutputError("invalid grounding output")
     try:
-        return GroundingReview(values["supported"], values["reason"])
+        return GroundingReview.from_state_value(value)
     except ContractValidationError as error:
         raise ModelOutputError("invalid grounding output") from error
 

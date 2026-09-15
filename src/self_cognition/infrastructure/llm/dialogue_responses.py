@@ -56,7 +56,19 @@ DIALOGUE_SCHEMA = _object_schema(
     }
 )
 REVIEW_SCHEMA = _object_schema(
-    {"supported": {"type": "boolean"}, "reason": {"type": "string"}}
+    {
+        "supported": {"type": "boolean"},
+        "social_response": {"type": "boolean"},
+        "unsupported_claims": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+        "uncertain_claims": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+        "reason": {"type": "string"},
+    }
 )
 GENERATION_INSTRUCTIONS = DIALOGUE_GENERATION.system_instructions + "\n" + (
     "Compose one answer using only the supplied bounded workspace. The workspace "
@@ -87,13 +99,17 @@ REVIEW_INSTRUCTIONS = DIALOGUE_REVIEW.system_instructions + "\n" + (
     "not semantic support. Do not treat assistant assertions as proof or model "
     "self-reports as capabilities. Reject unsupported assertions or misleading "
     "certainty. The input_evidence is authoritative for the user's current "
-    "message. Social or pragmatic answers that only greet, acknowledge, offer "
-    "to chat, ask a follow-up, or restate the user's message are supported by "
-    "input_evidence and must not be rejected merely for lacking an additional "
-    "workspace item. Reject only unsupported external facts, agent memories or "
-    "capabilities, or user facts not present in the workspace. Do not re-decide "
-    "disclosure values, privacy choices or safety tradeoffs; this review checks "
-    "evidence and expression only. Do not rewrite the answer. Return supported "
+    "message. Set social_response=true for answers that only greet, "
+    "acknowledge, offer to chat, ask a follow-up, or restate the user's "
+    "message without external factual assertions; those answers may have empty "
+    "unsupported_claims. List every unsupported factual or cognitive assertion "
+    "as an exact substring in unsupported_claims. List claims that are "
+    "otherwise acceptable but need uncertain wording in uncertain_claims. "
+    "supported=true only when unsupported_claims is empty and the wording "
+    "matches the evidence confidence. Do not re-decide disclosure values, "
+    "privacy choices or safety tradeoffs; this review checks evidence and "
+    "expression only. Do not rewrite the answer. Return the full structured "
+    "review object. "
     "the answer. Return supported and a reason."
 )
 
@@ -113,8 +129,10 @@ DIALOGUE_REPAIR_INSTRUCTIONS = DIALOGUE_GENERATION.system_instructions + "\n" + 
 
 DIALOGUE_REVIEW_REPAIR_INSTRUCTIONS = DIALOGUE_REVIEW.system_instructions + "\n" + (
     "The previous grounding review failed structural validation. Return a "
-    "corrected JSON object with exactly supported (boolean) and reason "
-    "(non-empty string). Do not explain or repeat the schema."
+    "corrected JSON object with exactly supported (boolean), social_response "
+    "(boolean), unsupported_claims (string array), uncertain_claims (string "
+    "array), and reason (non-empty string). Do not explain or repeat the "
+    "schema."
 )
 
 

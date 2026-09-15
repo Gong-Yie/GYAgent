@@ -609,10 +609,7 @@ def _event_payload_to_dict(
             "review": (
                 None
                 if payload.review is None
-                else {
-                    "supported": payload.review.supported,
-                    "reason": payload.review.reason,
-                }
+                else payload.review.to_state_value()
             ),
         }
     if isinstance(payload, AssessmentRequestPayload):
