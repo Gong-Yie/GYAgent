@@ -21,6 +21,7 @@ class ApplicationSettings:
     worker_max_workers: int = 4
     cognition_max_output_tokens: int = 2048
     dialogue_max_output_tokens: int = 4096
+    model_temperature: float = 0.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "data_dir", Path(self.data_dir))
@@ -36,6 +37,8 @@ class ApplicationSettings:
             raise ValueError("cognition max output tokens must be positive")
         if self.dialogue_max_output_tokens < 1:
             raise ValueError("dialogue max output tokens must be positive")
+        if not 0.0 <= self.model_temperature <= 2.0:
+            raise ValueError("model temperature must be between 0 and 2")
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +84,9 @@ def load_settings(
         ),
         dialogue_max_output_tokens=_integer(
             values, "SC_DIALOGUE_MAX_OUTPUT_TOKENS", 4096
+        ),
+        model_temperature=_floating_point(
+            values, "SC_MODEL_TEMPERATURE", 0.0
         ),
     )
 

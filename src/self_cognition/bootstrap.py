@@ -226,14 +226,21 @@ def build_container(
                 model,
                 base_url=base_url,
                 max_output_tokens=resolved_settings.dialogue_max_output_tokens,
+                temperature=resolved_settings.model_temperature,
             )
         if planning_model is None:
             planning_model = OpenAIResponsesPlanningModel.from_api_key(
-                api_key, model, base_url=base_url
+                api_key,
+                model,
+                base_url=base_url,
+                temperature=resolved_settings.model_temperature,
             )
         if action_model is None:
             action_model = OpenAIResponsesActionModel.from_api_key(
-                api_key, model, base_url=base_url
+                api_key,
+                model,
+                base_url=base_url,
+                temperature=resolved_settings.model_temperature,
             )
         if openai_configuration is not None and proactive_model is None:
             proactive_model = OpenAIResponsesProactivityModel.from_api_key(
@@ -241,6 +248,7 @@ def build_container(
                 model,
                 base_url=base_url,
                 max_output_tokens=resolved_settings.cognition_max_output_tokens,
+                temperature=resolved_settings.model_temperature,
             )
         if module_registrations is None and metacognition_model is None:
             metacognition_model = OpenAIResponsesCognitionModel.from_api_key(
@@ -249,6 +257,7 @@ def build_container(
                 base_url=base_url,
                 max_output_tokens=resolved_settings.cognition_max_output_tokens,
                 assessment_kind="metacognition",
+                temperature=resolved_settings.model_temperature,
             )
         if module_registrations is None and affect_model is None:
             affect_model = OpenAIResponsesCognitionModel.from_api_key(
@@ -257,6 +266,7 @@ def build_container(
                 base_url=base_url,
                 max_output_tokens=resolved_settings.cognition_max_output_tokens,
                 assessment_kind="affect",
+                temperature=resolved_settings.model_temperature,
             )
         if module_registrations is None and semantic_model is None:
             semantic_model = OpenAIResponsesCognitionModel.from_api_key(
@@ -265,6 +275,7 @@ def build_container(
                 base_url=base_url,
                 max_output_tokens=resolved_settings.cognition_max_output_tokens,
                 assessment_kind="semantic",
+                temperature=resolved_settings.model_temperature,
             )
     layout = FileDataLayout(resolved_settings.data_dir).ensure()
     metrics = MetricsRegistry()

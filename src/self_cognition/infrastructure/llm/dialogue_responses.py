@@ -70,7 +70,9 @@ GENERATION_INSTRUCTIONS = DIALOGUE_GENERATION.system_instructions + "\n" + (
     "probability. Affect is a computational assessment, not real feelings. "
     "Decide disclosure and use of user-provided sensitive inputs using agent values, "
     "relationships, risks, consequences and disclosure intent. Record the decision "
-    "scope, reasons, evidence and whether you override intent. Withholding still "
+    "scope, reasons, evidence and whether you override intent. "
+    "If the supplied request has no conversation scope, do not choose conversation "
+    "disclosure; choose private. Withholding still "
     "requires an appropriate user-facing reply. Do not claim confirmation absent "
     "evidence. Plain greetings can have empty claims. Return only one JSON object "
     "that conforms to the provided schema. Do not return or repeat the schema "
@@ -90,6 +92,26 @@ REVIEW_INSTRUCTIONS = DIALOGUE_REVIEW.system_instructions + "\n" + (
 )
 
 
+DIALOGUE_REPAIR_INSTRUCTIONS = DIALOGUE_GENERATION.system_instructions + "\n" + (
+    "The previous structured answer failed deterministic validation. Return a "
+    "corrected JSON object only. Every claim.text MUST be copied verbatim from "
+    "the text field. For each claim, stance MUST be uncertain when any cited "
+    "evidence has confidence below 1.0 or comes from a conflict. If you cannot "
+    "guarantee those constraints, return an empty claims array. Keep the answer "
+    "If the supplied request has no conversation scope, disclosure.scope MUST "
+    "not be conversation; choose private instead. Keep the answer meaning, "
+    "evidence IDs, disclosure decision and schema. Do not explain or "
+    "repeat the schema."
+)
+
+
+DIALOGUE_REVIEW_REPAIR_INSTRUCTIONS = DIALOGUE_REVIEW.system_instructions + "\n" + (
+    "The previous grounding review failed structural validation. Return a "
+    "corrected JSON object with exactly supported (boolean) and reason "
+    "(non-empty string). Do not explain or repeat the schema."
+)
+
+
 class OpenAIResponsesDialogueModel:
     def __init__(
         self,
@@ -98,13 +120,17 @@ class OpenAIResponsesDialogueModel:
         *,
         timeout_seconds: float = 30.0,
         max_output_tokens: int = 4096,
+        temperature: float = 0.0,
     ) -> None:
         if not model.strip() or timeout_seconds <= 0 or max_output_tokens < 1:
             raise ValueError("invalid dialogue model configuration")
+        if not 0.0 <= temperature <= 2.0:
+            raise ValueError("temperature must be between 0 and 2")
         self._client = client
         self._model = model
         self._timeout = timeout_seconds
         self._max_output_tokens = max_output_tokens
+        self._temperature = temperature
 
     @classmethod
     def from_api_key(
@@ -114,6 +140,7 @@ class OpenAIResponsesDialogueModel:
         *,
         base_url: str | None = None,
         max_output_tokens: int = 4096,
+        temperature: float = 0.0,
     ) -> "OpenAIResponsesDialogueModel":
         from openai import OpenAI
 
@@ -121,6 +148,7 @@ class OpenAIResponsesDialogueModel:
             OpenAI(api_key=api_key, base_url=base_url, max_retries=0),
             model,
             max_output_tokens=max_output_tokens,
+            temperature=temperature,
         )
 
     def close(self) -> None:
@@ -148,6 +176,46 @@ class OpenAIResponsesDialogueModel:
             REVIEW_INSTRUCTIONS,
             REVIEW_SCHEMA,
             "dialogue_grounding",
+            context,
+        )
+
+    def repair(
+        self,
+        workspace: WorkspacePacket,
+        previous: DialogueModelOutput,
+        error: Exception,
+        context: RunContext,
+    ) -> DialogueModelOutput:
+        return self._call(
+            {
+                "workspace": workspace_model_context(workspace),
+                "previous_output": previous.raw_output,
+                "validation_error": str(error),
+            },
+            DIALOGUE_REPAIR_INSTRUCTIONS,
+            DIALOGUE_SCHEMA,
+            "dialogue_repair",
+            context,
+        )
+
+    def repair_review(
+        self,
+        workspace: WorkspacePacket,
+        draft: DialogueDraft,
+        previous: DialogueModelOutput,
+        error: Exception,
+        context: RunContext,
+    ) -> DialogueModelOutput:
+        return self._call(
+            {
+                "workspace": workspace_model_context(workspace),
+                "answer": draft_to_dict(draft),
+                "previous_output": previous.raw_output,
+                "validation_error": str(error),
+            },
+            DIALOGUE_REVIEW_REPAIR_INSTRUCTIONS,
+            REVIEW_SCHEMA,
+            "dialogue_grounding_repair",
             context,
         )
 
@@ -181,6 +249,7 @@ class OpenAIResponsesDialogueModel:
                 },
                 store=False,
                 timeout=timeout,
+                temperature=self._temperature,
                 max_output_tokens=self._max_output_tokens,
             )
         except Exception as error:

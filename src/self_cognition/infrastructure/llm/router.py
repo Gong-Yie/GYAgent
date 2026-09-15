@@ -130,6 +130,30 @@ class RoutedDialogueModel:
             attempts=self._attempts,
         )
 
+    def repair_review(self, workspace, draft, previous, error, context):
+        registration = self._router.select("dialogue", context)
+        repair = getattr(registration.model, "repair_review", None)
+        if repair is None:
+            return None
+        return _call_registration(
+            self._router,
+            registration,
+            lambda: repair(workspace, draft, previous, error, context),
+            attempts=1,
+        )
+
+    def repair(self, workspace, previous, error, context):
+        registration = self._router.select("dialogue", context)
+        repair = getattr(registration.model, "repair", None)
+        if repair is None:
+            return None
+        return _call_registration(
+            self._router,
+            registration,
+            lambda: repair(workspace, previous, error, context),
+            attempts=1,
+        )
+
     def review(self, workspace, draft, context):
         registration = self._router.select("dialogue", context)
         return _call_registration(
@@ -144,6 +168,18 @@ class RoutedPlanningModel:
     def __init__(self, router: ModelRouter, *, attempts: int = 2) -> None:
         self._router = router
         self._attempts = attempts
+
+    def repair(self, goal, budget, workspace, capabilities, previous, error, context):
+        registration = self._router.select("planning", context)
+        repair = getattr(registration.model, "repair", None)
+        if repair is None:
+            return None
+        return _call_registration(
+            self._router,
+            registration,
+            lambda: repair(goal, budget, workspace, capabilities, previous, error, context),
+            attempts=1,
+        )
 
     def create(self, goal, budget, workspace, capabilities, context):
         registration = self._router.select("planning", context)

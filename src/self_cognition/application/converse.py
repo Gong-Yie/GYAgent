@@ -9,6 +9,7 @@ from self_cognition.application.results import ConverseResult, ProcessEventStatu
 from self_cognition.core.dialogue import (
     AssistantMessagePayload,
     DialogueContextPayload,
+    DialogueDraft,
     DialogueFailurePayload,
     DialogueModel,
     DialogueModelOutput,
@@ -30,7 +31,7 @@ from self_cognition.core.protocols import (
     EvidenceRepository,
     StateRepository,
 )
-from self_cognition.core.scopes import SubjectScope
+from self_cognition.core.scopes import DisclosureScope, SubjectScope
 from self_cognition.core.state import SubjectState
 from self_cognition.core.workspace import (
     RetrievalBudget,
@@ -181,21 +182,83 @@ class ConverseService:
             stage = "generate"
             context.record_model_call()
             output = self._model.generate(workspace, context)
-            self._save_output(cause, output, context)
+            try:
+                self._save_output(cause, output, context)
+            except ModelOutputError as save_error:
+                repair = getattr(self._model, "repair", None)
+                if not callable(repair):
+                    raise
+                self._require_live(workspace)
+                self._ensure_active(context)
+                context.record_model_call()
+                repaired = repair(workspace, output, save_error, context)
+                if repaired is None:
+                    raise
+                output = repaired
+                self._save_output(cause, output, context)
+                self._ensure_active(context)
             self._ensure_active(context)
             self._require_unchanged(workspace, payload.workspace_json)
-            draft = draft_from_dict(parse_model_json(output.raw_output))
-            cited = validate_grounding(draft, workspace)
+            try:
+                draft, cited = self._parse_dialogue_draft(output, workspace, origin)
+            except ModelOutputError as error:
+                repair = getattr(self._model, "repair", None)
+                if not callable(repair):
+                    raise
+                self._require_live(workspace)
+                self._ensure_active(context)
+                context.record_model_call()
+                repaired = repair(workspace, output, error, context)
+                if repaired is None:
+                    raise
+                self._save_output(cause, repaired, context)
+                self._ensure_active(context)
+                self._require_unchanged(workspace, payload.workspace_json)
+                output = repaired
+                draft, cited = self._parse_dialogue_draft(output, workspace, origin)
             review = None
             if not is_plain_smalltalk(workspace.task_context, draft):
                 stage = "grounding"
                 self._require_live(workspace)
                 context.record_model_call()
                 output = self._model.review(workspace, draft, context)
-                self._save_output(cause, output, context)
+                try:
+                    self._save_output(cause, output, context)
+                except ModelOutputError as save_error:
+                    repair_review = getattr(self._model, "repair_review", None)
+                    if not callable(repair_review):
+                        raise
+                    self._require_live(workspace)
+                    self._ensure_active(context)
+                    context.record_model_call()
+                    repaired = repair_review(
+                        workspace, draft, output, save_error, context
+                    )
+                    if repaired is None:
+                        raise
+                    output = repaired
+                    self._save_output(cause, output, context)
+                    self._ensure_active(context)
                 self._ensure_active(context)
                 self._require_unchanged(workspace, payload.workspace_json)
-                review = review_from_dict(parse_model_json(output.raw_output))
+                try:
+                    review = review_from_dict(parse_model_json(output.raw_output))
+                except ModelOutputError as error:
+                    repair_review = getattr(self._model, "repair_review", None)
+                    if not callable(repair_review):
+                        raise
+                    self._require_live(workspace)
+                    self._ensure_active(context)
+                    context.record_model_call()
+                    repaired = repair_review(
+                        workspace, draft, output, error, context
+                    )
+                    if repaired is None:
+                        raise
+                    self._save_output(cause, repaired, context)
+                    self._ensure_active(context)
+                    self._require_unchanged(workspace, payload.workspace_json)
+                    review = review_from_dict(parse_model_json(repaired.raw_output))
                 if not review.supported:
                     return self._failure(
                         origin,
@@ -316,6 +379,22 @@ class ConverseService:
         if workspace.input_evidence is not None:
             refs[workspace.input_evidence.evidence_id] = workspace.input_evidence
         return tuple(refs.values())
+
+    @staticmethod
+    def _parse_dialogue_draft(
+        output: DialogueModelOutput,
+        workspace: WorkspacePacket,
+        origin: EventEnvelope,
+    ) -> tuple[DialogueDraft, tuple[EvidenceRef, ...]]:
+        draft = draft_from_dict(parse_model_json(output.raw_output))
+        if (
+            draft.disclosure.scope is DisclosureScope.CONVERSATION
+            and origin.scope.conversation is None
+        ):
+            raise ModelOutputError(
+                "conversation disclosure requires a conversation scope"
+            )
+        return draft, validate_grounding(draft, workspace)
 
     def _save_output(
         self,

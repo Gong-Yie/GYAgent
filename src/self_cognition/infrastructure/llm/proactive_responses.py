@@ -44,13 +44,17 @@ class OpenAIResponsesProactivityModel:
         *,
         timeout_seconds: float = 30.0,
         max_output_tokens: int = 1024,
+        temperature: float = 0.0,
     ) -> None:
         if not model.strip() or timeout_seconds <= 0 or max_output_tokens < 1:
             raise ValueError("invalid proactivity model configuration")
+        if not 0.0 <= temperature <= 2.0:
+            raise ValueError("temperature must be between 0 and 2")
         self._client = client
         self._model = model
         self._timeout_seconds = timeout_seconds
         self._max_output_tokens = max_output_tokens
+        self._temperature = temperature
 
     @classmethod
     def from_api_key(
@@ -61,6 +65,7 @@ class OpenAIResponsesProactivityModel:
         base_url: str | None = None,
         timeout_seconds: float = 30.0,
         max_output_tokens: int = 1024,
+        temperature: float = 0.0,
     ) -> "OpenAIResponsesProactivityModel":
         from openai import OpenAI
 
@@ -69,6 +74,7 @@ class OpenAIResponsesProactivityModel:
             model,
             timeout_seconds=timeout_seconds,
             max_output_tokens=max_output_tokens,
+            temperature=temperature,
         )
 
     def propose(
@@ -103,6 +109,7 @@ class OpenAIResponsesProactivityModel:
                 sort_keys=True,
             ),
             text={"format": {"type": "json_schema", "name": "proactive_motive", "schema": PROACTIVE_SCHEMA, "strict": True}},
+            temperature=self._temperature,
             max_output_tokens=self._max_output_tokens,
             timeout=timeout,
         )

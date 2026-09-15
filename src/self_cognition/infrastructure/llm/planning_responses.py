@@ -61,6 +61,14 @@ REPLANNING_INSTRUCTIONS = (
 )
 
 
+PLANNING_REPAIR_INSTRUCTIONS = PLANNING_INSTRUCTIONS + (
+    " The previous plan failed deterministic structural validation. Return "
+    "a corrected JSON object only. Keep every goal completion condition, use "
+    "only supplied tool IDs, avoid dependency cycles, and stay within budget. "
+    "Do not explain or repeat the schema."
+)
+
+
 class OpenAIResponsesPlanningModel:
     def __init__(
         self,
@@ -69,13 +77,17 @@ class OpenAIResponsesPlanningModel:
         *,
         timeout_seconds: float = 30.0,
         max_output_tokens: int = 2048,
+        temperature: float = 0.0,
     ) -> None:
         if not model.strip() or timeout_seconds <= 0 or max_output_tokens < 1:
             raise ValueError("invalid planning model configuration")
+        if not 0.0 <= temperature <= 2.0:
+            raise ValueError("temperature must be between 0 and 2")
         self._client = client
         self._model = model
         self._timeout = timeout_seconds
         self._max_output_tokens = max_output_tokens
+        self._temperature = temperature
 
     @classmethod
     def from_api_key(
@@ -84,12 +96,14 @@ class OpenAIResponsesPlanningModel:
         model: str,
         *,
         base_url: str | None = None,
+        temperature: float = 0.0,
     ) -> "OpenAIResponsesPlanningModel":
         from openai import OpenAI
 
         return cls(
             OpenAI(api_key=api_key, base_url=base_url, max_retries=0),
             model,
+            temperature=temperature,
         )
 
     def close(self) -> None:
@@ -152,6 +166,30 @@ class OpenAIResponsesPlanningModel:
             context,
         )
 
+    def repair(
+        self,
+        goal: GoalRecord,
+        budget: PlanBudget,
+        workspace: WorkspacePacket,
+        capabilities: tuple[CapabilityRecord, ...],
+        previous: PlanningModelOutput,
+        error: Exception,
+        context: RunContext,
+    ) -> PlanningModelOutput:
+        return self._call(
+            {
+                "goal": goal.to_state_value(),
+                "budget": budget_to_dict(budget),
+                "workspace": workspace_model_context(workspace),
+                "capabilities": [item.to_state_value() for item in capabilities],
+                "previous_output": previous.raw_output,
+                "validation_error": str(error),
+            },
+            PLANNING_REPAIR_INSTRUCTIONS,
+            "goal_plan_repair",
+            context,
+        )
+
     def _call(
         self,
         payload: dict[str, object],
@@ -182,6 +220,7 @@ class OpenAIResponsesPlanningModel:
                 },
                 store=False,
                 timeout=timeout,
+                temperature=self._temperature,
                 max_output_tokens=self._max_output_tokens,
             )
         except Exception as error:

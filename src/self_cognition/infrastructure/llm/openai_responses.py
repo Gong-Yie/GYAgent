@@ -71,6 +71,7 @@ class OpenAIResponsesCognitionModel:
         timeout_seconds: float = 30.0,
         max_output_tokens: int = 2048,
         assessment_kind: str = "semantic",
+        temperature: float = 0.0,
     ) -> None:
         if not model.strip():
             raise ValueError("model must not be blank")
@@ -80,10 +81,13 @@ class OpenAIResponsesCognitionModel:
             raise ValueError("max_output_tokens must be positive")
         if assessment_kind not in {"semantic", "metacognition", "affect"}:
             raise ValueError("unsupported assessment kind")
+        if not 0.0 <= temperature <= 2.0:
+            raise ValueError("temperature must be between 0 and 2")
         self._client = client
         self._model = model
         self._timeout_seconds = timeout_seconds
         self._max_output_tokens = max_output_tokens
+        self._temperature = temperature
         self._assessment_kind = assessment_kind
 
     @classmethod
@@ -96,6 +100,7 @@ class OpenAIResponsesCognitionModel:
         timeout_seconds: float = 30.0,
         max_output_tokens: int = 2048,
         assessment_kind: str = "semantic",
+        temperature: float = 0.0,
     ) -> "OpenAIResponsesCognitionModel":
         from openai import OpenAI
 
@@ -105,6 +110,7 @@ class OpenAIResponsesCognitionModel:
             timeout_seconds=timeout_seconds,
             max_output_tokens=max_output_tokens,
             assessment_kind=assessment_kind,
+            temperature=temperature,
         )
 
     def extract(
@@ -193,6 +199,7 @@ class OpenAIResponsesCognitionModel:
                         "schema": schema,
                     }
                 },
+                temperature=self._temperature,
                 max_output_tokens=self._max_output_tokens,
                 store=False,
                 timeout=timeout,

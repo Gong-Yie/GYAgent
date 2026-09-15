@@ -92,13 +92,17 @@ class OpenAIResponsesActionModel:
         *,
         timeout_seconds: float = 30.0,
         max_output_tokens: int = 2048,
+        temperature: float = 0.0,
     ) -> None:
         if not model.strip() or timeout_seconds <= 0 or max_output_tokens < 1:
             raise ValueError("invalid action model configuration")
+        if not 0.0 <= temperature <= 2.0:
+            raise ValueError("temperature must be between 0 and 2")
         self._client = client
         self._model = model
         self._timeout = timeout_seconds
         self._max_output_tokens = max_output_tokens
+        self._temperature = temperature
 
     @classmethod
     def from_api_key(
@@ -107,12 +111,14 @@ class OpenAIResponsesActionModel:
         model: str,
         *,
         base_url: str | None = None,
+        temperature: float = 0.0,
     ) -> "OpenAIResponsesActionModel":
         from openai import OpenAI
 
         return cls(
             OpenAI(api_key=api_key, base_url=base_url, max_retries=0),
             model,
+            temperature=temperature,
         )
 
     def close(self) -> None:
@@ -187,6 +193,7 @@ class OpenAIResponsesActionModel:
                 },
                 store=False,
                 timeout=timeout,
+                temperature=self._temperature,
                 max_output_tokens=self._max_output_tokens,
             )
         except Exception as error:

@@ -364,26 +364,37 @@ class PursueGoalService:
                 request.goal.goal_id,
             )
         try:
-            draft = plan_draft_from_json(output.raw_output)
-            plan = Plan(
-                uuid5(request.request_id, "plan:1"),
-                request.goal.goal_id,
-                1,
-                request.budget,
-                draft.steps,
-                context.clock.now(),
-            )
-            self._validator.validate(request.goal, plan, self._capabilities.registrations())
+            plan = self._created_plan(request, output, context)
         except (ContractValidationError, ModelOutputError) as error:
-            return self._failure(
-                request.owner,
-                None,
-                context,
-                "validate",
-                type(error).__name__,
-                request.request_id,
-                request.goal.goal_id,
-            )
+            try:
+                plan = self._repair_created_plan(
+                    request,
+                    workspace,
+                    output,
+                    error,
+                    context,
+                    context_event.event_id,
+                )
+            except (ContractValidationError, ModelOutputError) as repair_error:
+                return self._failure(
+                    request.owner,
+                    None,
+                    context,
+                    "validate",
+                    type(repair_error).__name__,
+                    request.request_id,
+                    request.goal.goal_id,
+                )
+            if plan is None:
+                return self._failure(
+                    request.owner,
+                    None,
+                    context,
+                    "validate",
+                    type(error).__name__,
+                    request.request_id,
+                    request.goal.goal_id,
+                )
         planned = self._planning_event(
             request.owner,
             "goal.planned",
@@ -410,6 +421,60 @@ class PursueGoalService:
             self.progress(request.owner, plan.plan_id, request.goal),
             planned.event_id,
         )
+
+    def _created_plan(
+        self,
+        request: GoalPlanningRequest,
+        output,
+        context: RunContext,
+    ) -> Plan:
+        draft = plan_draft_from_json(output.raw_output)
+        plan = Plan(
+            uuid5(request.request_id, "plan:1"),
+            request.goal.goal_id,
+            1,
+            request.budget,
+            draft.steps,
+            context.clock.now(),
+        )
+        self._validator.validate(
+            request.goal, plan, self._capabilities.registrations()
+        )
+        return plan
+
+    def _repair_created_plan(
+        self,
+        request: GoalPlanningRequest,
+        workspace,
+        output,
+        error: Exception,
+        context: RunContext,
+        cause_event_id: UUID,
+    ) -> Plan | None:
+        repair = getattr(self._planner, "repair", None)
+        if not callable(repair):
+            return None
+        context.record_model_call()
+        repaired = repair(
+            request.goal,
+            request.budget,
+            workspace,
+            self._capabilities.registrations(),
+            output,
+            error,
+            context,
+        )
+        if repaired is None:
+            return None
+        self._persist_model_response(
+            request.owner,
+            repaired,
+            context,
+            cause_event_id,
+        )
+        if repaired.error_type is not None:
+            return None
+        return self._created_plan(request, repaired, context)
 
     def _change_status(
         self,
