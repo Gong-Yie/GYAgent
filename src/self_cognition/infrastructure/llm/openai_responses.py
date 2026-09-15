@@ -274,7 +274,11 @@ class OpenAIResponsesCognitionModel:
             invalid = True
             dump = getattr(response, "model_dump_json", None)
             output_text = dump() if callable(dump) else json.dumps({"output_text": output_text})
-        invalid = invalid or getattr(response, "status", "completed") != "completed"
+        # Compatible providers may report incomplete while still returning a
+        # complete structured payload; deterministic parsing remains authoritative.
+        provider_status = getattr(response, "status", "completed")
+        if provider_status in {"failed", "cancelled"}:
+            invalid = True
 
         response_event = EventEnvelope.model_response(
             event,

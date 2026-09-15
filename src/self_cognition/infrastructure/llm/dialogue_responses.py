@@ -292,7 +292,11 @@ class OpenAIResponsesDialogueModel:
             raw_output = (
                 dump() if callable(dump) else json.dumps({"output_text": raw_output})
             )
-        invalid = invalid or getattr(response, "status", "completed") != "completed"
+        # Compatible providers may report incomplete while still returning a
+        # complete structured payload; deterministic parsing remains authoritative.
+        provider_status = getattr(response, "status", "completed")
+        if provider_status in {"failed", "cancelled"}:
+            invalid = True
         return DialogueModelOutput(
             self._model,
             response_id,

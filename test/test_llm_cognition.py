@@ -429,3 +429,21 @@ def test_invalid_json_is_repaired_once():
     assert len(responses.calls) == 2
     assert contributions[0].value == "晚上"
     assert "previous_output=not-json" in responses.calls[1]["input"]
+
+def test_incomplete_status_with_valid_structured_output_is_accepted():
+    event = Event.user_message("user-1", "我喜欢晚上学习")
+    response = SimpleNamespace(
+        id="resp-incomplete-valid",
+        output_text=_valid_semantic_output(event, str(event.event_id)),
+        status="incomplete",
+    )
+    responses = SequenceResponses([response])
+    model = OpenAIResponsesCognitionModel(
+        SimpleNamespace(responses=responses),
+        "test-model",
+    )
+
+    contributions = LLMSemanticExtractor(model).process(event, make_context())
+
+    assert len(responses.calls) == 1
+    assert contributions[0].value == "晚上"
