@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import UUID
@@ -6,6 +7,7 @@ import pytest
 
 from self_cognition.application.process_event import ProcessEventService
 from self_cognition.application.results import ProcessEventStatus
+from self_cognition.cognition.affect.affect_extractor import AffectExtractor
 from self_cognition.cognition.semantic.llm_extractor import LLMSemanticExtractor
 from self_cognition.cognition.semantic.preference_extractor import (
     PreferenceExtractor,
@@ -13,6 +15,7 @@ from self_cognition.cognition.semantic.preference_extractor import (
 from self_cognition.core.errors import ModelOutputError
 from self_cognition.core.evidence import EvidenceSourceKind
 from self_cognition.core.events import Event, ModelResponsePayload
+from self_cognition.core.state import SubjectState
 from self_cognition.infrastructure.llm.openai_responses import (
     OpenAIResponsesCognitionModel,
 )
@@ -50,6 +53,20 @@ class FakeResponses:
         if self._error is not None:
             raise self._error
         return self._response
+
+
+class SequenceResponses:
+    def __init__(self, responses) -> None:
+        self._responses = tuple(responses)
+        self.calls = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        index = min(len(self.calls) - 1, len(self._responses) - 1)
+        response = self._responses[index]
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 def make_model(output_text: str):
@@ -207,7 +224,7 @@ def test_candidate_without_source_event_evidence_is_rejected():
         '"evidence_ids":["00000000-0000-0000-0000-000000000099"]}]}'
     )
 
-    with pytest.raises(ModelOutputError, match="source evidence"):
+    with pytest.raises(ModelOutputError, match="not supplied to the model"):
         LLMSemanticExtractor(model).process(event, make_context())
 
 
@@ -232,3 +249,183 @@ def test_cancelled_run_does_not_call_the_model_client():
 
     assert result.status is ProcessEventStatus.CANCELLED
     assert responses.calls == []
+
+
+def _valid_semantic_output(event, evidence_id: str) -> str:
+    return (
+        '{"candidates":[{"target_field":"preferences.study_time",'
+        '"operation":"set","cognition_type":"preference","value":"晚上",'
+        '"confidence":1.0,"evidence_ids":["'
+        + evidence_id
+        + '"]}]}'
+    )
+
+
+def test_top_level_shape_is_normalized_without_repair():
+    event = Event.user_message("user-1", "我喜欢晚上学习")
+    candidate = (
+        '{"candidates":[{"target_field":"preferences.study_time",'
+        '"operation":"set","cognition_type":"preference","value":"晚上",'
+        '"confidence":1.0,"evidence_ids":["'
+        + str(event.event_id)
+        + '"]}],"confidence":1.0}'
+    )
+    responses = SequenceResponses(
+        [
+            SimpleNamespace(
+                id="resp-normalized",
+                output_text=candidate,
+                status="completed",
+            )
+        ]
+    )
+    model = OpenAIResponsesCognitionModel(
+        SimpleNamespace(responses=responses),
+        "test-model",
+    )
+
+    contributions = LLMSemanticExtractor(model).process(event, make_context())
+
+    assert len(responses.calls) == 1
+    assert contributions[0].target_field == "preferences.study_time"
+    assert contributions[0].value == "晚上"
+
+
+def test_invalid_evidence_id_is_filtered_without_repair():
+    event = Event.user_message("user-1", "我喜欢晚上学习")
+    invalid = SimpleNamespace(
+        id="resp-invalid",
+        output_text=(
+            '{"candidates":[{"target_field":"preferences.study_time",'
+            '"operation":"set","cognition_type":"preference","value":"晚上",'
+            '"confidence":1.0,"evidence_ids":["'
+            + str(event.event_id)
+            + '","run:00000000-0000-0000-0000-000000000001"]}]}'
+        ),
+        status="completed",
+    )
+    responses = SequenceResponses([invalid])
+    model = OpenAIResponsesCognitionModel(
+        SimpleNamespace(responses=responses),
+        "test-model",
+    )
+
+    contributions = LLMSemanticExtractor(model).process(event, make_context())
+
+    assert len(responses.calls) == 1
+    assert contributions[0].value == "晚上"
+
+
+def test_invalid_json_repair_is_bounded_to_one_retry():
+    event = Event.user_message("user-1", "我喜欢晚上学习")
+    invalid = SimpleNamespace(
+        id="resp-invalid",
+        output_text="not-json",
+        status="completed",
+    )
+    responses = SequenceResponses([invalid])
+    model = OpenAIResponsesCognitionModel(
+        SimpleNamespace(responses=responses),
+        "test-model",
+    )
+
+    with pytest.raises(ModelOutputError, match="not valid JSON"):
+        LLMSemanticExtractor(model).process(event, make_context())
+
+    assert len(responses.calls) == 2
+
+
+def test_affect_cognition_type_mismatch_is_repaired_once():
+    event = Event.user_message("user-1", "我有点无聊")
+
+    def output(cognition_type: str) -> str:
+        return json.dumps(
+            {
+                "candidates": [
+                    {
+                        "target_field": "affect.current.interaction",
+                        "operation": "set",
+                        "cognition_type": cognition_type,
+                        "value": {
+                            "target": "user-1",
+                            "goal_ids": [],
+                            "emotion": "boredom",
+                            "valence": "negative",
+                            "scope": "interaction",
+                            "initial_intensity": 0.7,
+                            "assessed_at": event.occurred_at.isoformat(),
+                            "half_life_seconds": 3600.0,
+                            "active_threshold": 0.1,
+                            "arousal": 0.1,
+                            "control": 0.4,
+                            "certainty": 0.7,
+                        },
+                        "confidence": 0.6,
+                        "evidence_ids": [str(event.event_id)],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+
+    responses = SequenceResponses(
+        [
+            SimpleNamespace(
+                id="resp-invalid",
+                output_text=output("preference"),
+                status="completed",
+            ),
+            SimpleNamespace(
+                id="resp-valid",
+                output_text=output("affect"),
+                status="completed",
+            ),
+        ]
+    )
+    model = OpenAIResponsesCognitionModel(
+        SimpleNamespace(responses=responses),
+        "test-model",
+        assessment_kind="affect",
+    )
+    engine = CognitionEngine(
+        (AffectExtractor(model),),
+        CognitiveSpaceService(StateReducer()),
+    )
+
+    state = engine.process(
+        event,
+        SubjectState.empty("user-1"),
+        make_context(),
+    )
+
+    assert len(responses.calls) == 2
+    assert "affect.current.interaction" in state.entries
+    assert state.entries["affect.current.interaction"].value["emotion"] == "boredom"
+
+
+def test_invalid_json_is_repaired_once():
+    event = Event.user_message("user-1", "我喜欢晚上学习")
+    responses = SequenceResponses(
+        [
+            SimpleNamespace(
+                id="resp-invalid",
+                output_text="not-json",
+                status="completed",
+            ),
+            SimpleNamespace(
+                id="resp-valid",
+                output_text=_valid_semantic_output(event, str(event.event_id)),
+                status="completed",
+            ),
+        ]
+    )
+    model = OpenAIResponsesCognitionModel(
+        SimpleNamespace(responses=responses),
+        "test-model",
+    )
+
+    contributions = LLMSemanticExtractor(model).process(event, make_context())
+
+    assert len(responses.calls) == 2
+    assert contributions[0].value == "晚上"
+    assert "previous_output=not-json" in responses.calls[1]["input"]

@@ -55,15 +55,35 @@ class LLMSemanticExtractor:
         if context.is_cancelled:
             raise RunCancelledError("run cancelled before cognition model")
 
-        result = self._model.extract(request)
+        result = None
+        try:
+            result = self._model.extract(request)
+            return self._build_contributions(request, result)
+        except ModelOutputError as error:
+            repair = getattr(self._model, "repair", None)
+            if not callable(repair):
+                raise
+            raw_output = getattr(error, "raw_output", None)
+            if raw_output is None and result is not None:
+                raw_output = result.raw_output
+            if raw_output is None:
+                raise
+            if context.is_cancelled:
+                raise RunCancelledError("run cancelled before cognition repair")
+            repaired = repair(request, raw_output, error, context)
+            if context.is_cancelled:
+                raise RunCancelledError("run cancelled after cognition repair")
+            return self._build_contributions(request, repaired)
 
-        if context.is_cancelled:
-            raise RunCancelledError("run cancelled after cognition model")
-
-        contributions: list[CognitiveContribution] = []
+    def _build_contributions(
+        self,
+        request: CognitionRequest,
+        result: object,
+    ) -> tuple[CognitiveContribution, ...]:
         event = request.event
         event_evidence = EvidenceRef.for_event(event)
-        for candidate in result.candidates:
+        contributions: list[CognitiveContribution] = []
+        for candidate in getattr(result, "candidates"):
             if str(event_evidence.evidence_id) not in candidate.evidence_ids:
                 raise ModelOutputError(
                     "candidate must cite the source evidence"
@@ -80,10 +100,12 @@ class LLMSemanticExtractor:
                     cognition_type=candidate.cognition_type,
                     value=candidate.value,
                     confidence=candidate.confidence,
-                    evidence_refs=(event_evidence, result.response_evidence),
+                    evidence_refs=(
+                        event_evidence,
+                        getattr(result, "response_evidence"),
+                    ),
                     source_module=SOURCE_MODULE,
                     module_version=MODULE_VERSION,
                 )
             )
-
         return tuple(contributions)

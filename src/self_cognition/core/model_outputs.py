@@ -37,6 +37,7 @@ class ModelExtractionResult:
     response_id: str
     candidates: tuple[ContributionCandidate, ...]
     response_evidence: EvidenceRef
+    raw_output: str = ""
 
     def __post_init__(self) -> None:
         if not self.response_id.strip():
@@ -50,3 +51,5 @@ class ModelExtractionResult:
             raise ModelOutputError(
                 "response_evidence must reference a model response"
             )
+        if not isinstance(self.raw_output, str):
+            raise ModelOutputError("model raw_output must be text")

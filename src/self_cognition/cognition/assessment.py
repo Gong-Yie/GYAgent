@@ -50,9 +50,55 @@ def extract_assessments(
     if request.run_context.is_cancelled:
         raise RunCancelledError("assessment cancelled before model call")
     observed = _ObservedContext(request.context)
-    result = model.extract(replace(request, context=observed))
-    if request.run_context.is_cancelled:
-        raise RunCancelledError("assessment cancelled after model call")
+    result = None
+    try:
+        result = model.extract(replace(request, context=observed))
+        return _build_assessment_contributions(
+            request,
+            result,
+            observed,
+            kind=kind,
+            module_id=module_id,
+            module_version=module_version,
+        )
+    except ModelOutputError as error:
+        repair = getattr(model, "repair", None)
+        if not callable(repair):
+            raise
+        raw_output = getattr(error, "raw_output", None)
+        if raw_output is None and result is not None:
+            raw_output = result.raw_output
+        if raw_output is None:
+            raise
+        if request.run_context.is_cancelled:
+            raise RunCancelledError("assessment cancelled before repair")
+        repaired = repair(
+            replace(request, context=observed),
+            raw_output,
+            error,
+            request.run_context,
+        )
+        if request.run_context.is_cancelled:
+            raise RunCancelledError("assessment cancelled after repair")
+        return _build_assessment_contributions(
+            request,
+            repaired,
+            observed,
+            kind=kind,
+            module_id=module_id,
+            module_version=module_version,
+        )
+
+
+def _build_assessment_contributions(
+    request: CognitionRequest,
+    result: object,
+    observed: _ObservedContext,
+    *,
+    kind: Literal["metacognition", "affect"],
+    module_id: str,
+    module_version: str,
+) -> tuple[CognitiveContribution, ...]:
     event = request.event
     source_refs = [EvidenceRef.for_event(event)]
     if isinstance(event.payload, AssessmentRequestPayload):

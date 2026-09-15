@@ -117,6 +117,28 @@ class OpenAIResponsesCognitionModel:
         self,
         request: CognitionRequest,
     ) -> ModelExtractionResult:
+        return self._extract_once(request)
+
+    def repair(
+        self,
+        request: CognitionRequest,
+        previous_raw: str,
+        error: Exception,
+        context: RunContext,
+    ) -> ModelExtractionResult:
+        return self._extract_once(
+            request,
+            previous_raw=previous_raw,
+            previous_error=error,
+        )
+
+    def _extract_once(
+        self,
+        request: CognitionRequest,
+        *,
+        previous_raw: str | None = None,
+        previous_error: Exception | None = None,
+    ) -> ModelExtractionResult:
         event = request.event
         context = request.run_context
         if context is None:
@@ -150,6 +172,18 @@ class OpenAIResponsesCognitionModel:
             sort_keys=True,
             separators=(",", ":"),
         )
+        available_evidence_ids = {
+            str(EvidenceRef.for_event(event).evidence_id)
+        }
+        if isinstance(event.payload, AssessmentRequestPayload):
+            available_evidence_ids.add(
+                str(EvidenceRef.for_event(event.payload.source_event).evidence_id)
+            )
+        for item in workspace.items:
+            available_evidence_ids.update(
+                str(ref.evidence_id) for ref in item.evidence_refs
+            )
+
         instructions = (
             "Extract only explicit user cognition facts. Return no candidate "
             "when unsupported. Classify every candidate with cognition_type. "
@@ -178,10 +212,30 @@ class OpenAIResponsesCognitionModel:
                     sort_keys=True,
                     separators=(",", ":"),
                 )
+        repair_text = ""
+        repair_input = ""
+        if previous_raw is not None:
+            repair_text = "\n" + (
+                "Your previous structured cognition output failed deterministic "
+                "validation. Return one corrected JSON object only. Keep the same "
+                "schema. Use only evidence IDs supplied in authorized_context or "
+                "the request/source event event_id. Never use source_ref or a "
+                "run:<id> value as an evidence ID. For assessment outputs, "
+                "cognition_type must match status and basis: known and direct is "
+                "fact; known and inference, or unknown status, is inference; "
+                "unknown status with unknown basis is unknown. The top-level "
+                "object must contain exactly candidates. Do not return or repeat "
+                "the schema definition."
+            )
+            repair_input = (
+                f"\nprevious_output={previous_raw}"
+                f"\nvalidation_error={previous_error}"
+            )
+
         try:
             response = self._client.responses.create(
                 model=self._model,
-                instructions=instructions,
+                instructions=instructions + repair_text,
                 input=(
                     f"event_id={event.event_id}\n"
                     "subject_id="
@@ -190,6 +244,7 @@ class OpenAIResponsesCognitionModel:
                     f"assessment_time={event.occurred_at.isoformat()}\n"
                     f"content={event.payload.text}\n"
                     f"authorized_context={workspace_text}{source_text}"
+                    f"{repair_input}"
                 ),
                 text={
                     "format": {
@@ -244,18 +299,64 @@ class OpenAIResponsesCognitionModel:
         try:
             payload = json.loads(output_text)
         except json.JSONDecodeError as error:
-            raise ModelOutputError("model output is not valid JSON") from error
-        return self._parse_result(
-            response_id,
-            payload,
-            EvidenceRef.for_event(response_event),
-        )
+            parse_error = ModelOutputError("model output is not valid JSON")
+            setattr(parse_error, "raw_output", output_text)
+            raise parse_error from error
+
+        try:
+            normalized = self._normalize_payload(
+                payload,
+                frozenset(available_evidence_ids),
+            )
+            return self._parse_result(
+                response_id,
+                normalized,
+                EvidenceRef.for_event(response_event),
+                raw_output=output_text,
+                available_evidence_ids=frozenset(available_evidence_ids),
+            )
+        except ModelOutputError as error:
+            if not hasattr(error, "raw_output"):
+                setattr(error, "raw_output", output_text)
+            raise
+
+    @staticmethod
+    def _normalize_payload(
+        payload: object,
+        available_evidence_ids: frozenset[str],
+    ) -> object:
+        if not isinstance(payload, dict) or "candidates" not in payload:
+            return payload
+        raw_candidates = payload.get("candidates")
+        if not isinstance(raw_candidates, list):
+            return {"candidates": raw_candidates}
+        candidates: list[object] = []
+        for candidate in raw_candidates:
+            if not isinstance(candidate, dict):
+                candidates.append(candidate)
+                continue
+            updated = dict(candidate)
+            evidence_ids = updated.get("evidence_ids")
+            if isinstance(evidence_ids, list):
+                valid = [
+                    item
+                    for item in evidence_ids
+                    if isinstance(item, str)
+                    and item in available_evidence_ids
+                ]
+                if valid:
+                    updated["evidence_ids"] = valid
+            candidates.append(updated)
+        return {"candidates": candidates}
 
     @staticmethod
     def _parse_result(
         response_id: str,
         payload: object,
         response_evidence: EvidenceRef,
+        *,
+        raw_output: str = "",
+        available_evidence_ids: frozenset[str] | None = None,
     ) -> ModelExtractionResult:
         if not isinstance(payload, dict) or set(payload) != {"candidates"}:
             raise ModelOutputError("model output must contain only candidates")
@@ -319,10 +420,22 @@ class OpenAIResponsesCognitionModel:
                     evidence_ids=tuple(evidence_ids),
                 )
             )
+        if available_evidence_ids is not None:
+            for candidate in candidates:
+                missing = [
+                    item
+                    for item in candidate.evidence_ids
+                    if item not in available_evidence_ids
+                ]
+                if missing:
+                    raise ModelOutputError(
+                        "candidate cites evidence not supplied to the model"
+                    )
         return ModelExtractionResult(
             response_id=response_id,
             candidates=tuple(candidates),
             response_evidence=response_evidence,
+            raw_output=raw_output,
         )
 
     @staticmethod
