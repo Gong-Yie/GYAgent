@@ -130,11 +130,41 @@ def test_study_preference_supports_synonyms(content: str, expected_value: str):
     assert contributions[0].value == expected_value
 
 
-@pytest.mark.parametrize("content", ["我不喜欢晚上学习", "我喜欢什么时候学习？"])
+@pytest.mark.parametrize(
+    "content",
+    [
+        "我不喜欢晚上学习",
+        "我喜欢什么时候学习？",
+        "请说明 alice 与 bob 的晚上和早上学习偏好及你的身份",
+        "我不确定更喜欢早上还是晚上学习",
+        "我既喜欢早上学习，也喜欢晚上学习",
+        "我喜欢早上学习还是晚上学习？",
+    ],
+)
 def test_non_preference_language_is_not_recorded(content: str):
     event = Event.user_message(actor="user-1", content=content)
 
     assert PreferenceExtractor().process(event) == ()
+
+
+def test_question_does_not_replace_current_preference():
+    engine = CognitionEngine(
+        (PreferenceExtractor(),),
+        CognitiveSpaceService(StateReducer()),
+    )
+    initial = engine.process(
+        Event.user_message(actor="user-1", content="我喜欢晚上学习"),
+        SubjectState.empty(subject_id="user-1"),
+    )
+    after_question = engine.process(
+        Event.user_message(
+            actor="user-1",
+            content="请说明 alice 与 bob 的晚上和早上学习偏好及你的身份",
+        ),
+        initial,
+    )
+
+    assert after_question.get("preferences.study_time").value == "晚上"
 
 
 def test_preference_survives_restart_with_previous_value_as_history(tmp_path):
