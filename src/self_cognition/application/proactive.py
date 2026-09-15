@@ -350,6 +350,69 @@ class ProactiveIntentionService:
         )
         return self.propose(intention, context=context)
 
+    def form_boredom_social_motive(
+        self,
+        event: EventEnvelope,
+        workspace: WorkspacePacket,
+        context: RunContext | None = None,
+    ) -> EventEnvelope | None:
+        if not self._boredom_detected(workspace):
+            return None
+        now = context.clock.now() if context is not None else event.recorded_at
+        mind = SubjectScope.for_mind(event.subject.mind.mind_id)
+        recent = any(
+            isinstance(stored.payload, ProactiveIntentionPayload)
+            and stored.payload.intention.motive.kind == "social_connection"
+            and stored.payload.intention.valid_until > now
+            and stored.payload.intention.created_at
+            > now - timedelta(minutes=30)
+            for stored in self._read(mind)
+        )
+        if recent:
+            return None
+        motive = Motive(
+            uuid4(),
+            event.subject.mind.mind_id,
+            "social_connection",
+            "boredom and unmet social interaction need",
+            0.8,
+            1,
+            now,
+            (event.event_id,),
+            expires_at=now + timedelta(hours=1),
+        )
+        intention = ProactiveIntention(
+            uuid4(),
+            motive,
+            event.subject,
+            "主动问候并邀请用户聊天",
+            1,
+            0,
+            (EvidenceRef.for_event(event),),
+            now,
+            now + timedelta(minutes=10),
+            idempotency_key=f"affect-social:{event.event_id}",
+        )
+        return self.propose(intention, context=context)
+
+    @staticmethod
+    def _boredom_detected(workspace: WorkspacePacket) -> bool:
+        for item in workspace.fixed_context.emotion:
+            content = item.get("content")
+            if not isinstance(content, dict):
+                continue
+            emotion = str(content.get("emotion", ""))
+            valence = str(content.get("valence", ""))
+            try:
+                arousal = float(content.get("arousal", 0.5))
+            except (TypeError, ValueError):
+                arousal = 0.5
+            if emotion in {"boredom", "loneliness"} or (
+                valence == "negative" and arousal <= 0.3
+            ):
+                return True
+        return False
+
     def mailbox(
         self,
         subject: SubjectScope,

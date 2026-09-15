@@ -422,6 +422,11 @@ def build_container(
         if observed is None and getattr(event.payload, "text", None):
             workspace = workspace_builder.build(event.payload.text, state)
             proactive.evaluate(event, workspace, context)
+            proactive.form_boredom_social_motive(
+                event,
+                workspace,
+                context,
+            )
         if event.event_type == "user.message":
             converse.converse(DialogueRequest(event), context)
 
