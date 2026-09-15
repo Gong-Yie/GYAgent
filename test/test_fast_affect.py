@@ -37,3 +37,15 @@ def test_boredom_reaction_is_low_arousal():
     assert reaction["emotion"] == "boredom"
     assert reaction["valence"] == "negative"
     assert reaction["arousal"] == 0.1
+
+def test_workspace_projects_active_emotion_and_mood():
+    from self_cognition.core.workspace import WorkspaceBuilder
+
+    event = Event.user_message("user-1", "今天项目成功交付，我很开心")
+    state = _engine().process(event, SubjectState.empty("user-1"))
+
+    workspace = WorkspaceBuilder().build("聊一聊当前状态", state)
+
+    fields = {item["field"] for item in workspace.fixed_context.emotion}
+    assert "affect.reaction.interaction" in fields
+    assert "mood.current" in fields

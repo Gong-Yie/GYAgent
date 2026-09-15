@@ -8,7 +8,13 @@ from enum import Enum
 from typing import Protocol, runtime_checkable
 from uuid import UUID
 
-from self_cognition.core.affect import MoodState, decay_assessment, decay_mood
+from self_cognition.core.affect import (
+    EmotionState,
+    MoodState,
+    decay_assessment,
+    decay_emotion,
+    decay_mood,
+)
 from self_cognition.core.errors import ContractValidationError
 from self_cognition.core.evidence import EvidenceRef
 from self_cognition.core.indexes import WorkspaceIndex, text_terms
@@ -76,6 +82,7 @@ class WorkspaceFixedContext:
     identity: tuple[str, ...] = ()
     current_goal: str = ""
     safety_rules: tuple[str, ...] = ()
+    emotion: tuple[dict[str, object], ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("identity", "safety_rules"):
@@ -86,6 +93,10 @@ class WorkspaceFixedContext:
                 raise ContractValidationError(f"{name} must contain text values")
         if not isinstance(self.current_goal, str):
             raise ContractValidationError("current_goal must be text")
+        if not isinstance(self.emotion, tuple) or any(
+            not isinstance(value, dict) for value in self.emotion
+        ):
+            raise ContractValidationError("emotion must contain objects")
 
 
 @dataclass(frozen=True, slots=True)
@@ -470,6 +481,13 @@ class WorkspaceBuilder:
             budget=budget,
             fixed_context=fixed_context,
         )
+        active_query = replace(
+            active_query,
+            fixed_context=replace(
+                active_query.fixed_context,
+                emotion=_emotion_projection(state, evaluation_time),
+            ),
+        )
         if active_query.subject != state.subject_scope:
             raise ContractValidationError("query and state subjects do not match")
 
@@ -485,6 +503,48 @@ class WorkspaceBuilder:
                 run_info=run_info,
             )
         return _select(active_query, state, result, run_info)
+
+
+def _emotion_projection(
+    state: SubjectState,
+    as_of: datetime,
+) -> tuple[dict[str, object], ...]:
+    projected: list[dict[str, object]] = []
+    for field_name, entry in sorted(state.entries.items()):
+        content: dict[str, object] | None = None
+        if field_name.startswith("affect.reaction."):
+            try:
+                emotion = EmotionState.from_state_value(entry.value)
+                decayed = decay_emotion(emotion, as_of)
+            except ContractValidationError:
+                continue
+            if decayed is not None:
+                content = decayed.to_state_value()
+        elif field_name.startswith("affect.current."):
+            value = decay_assessment(entry.value, as_of)
+            if isinstance(value, dict):
+                content = value
+        elif field_name.startswith("mood."):
+            try:
+                mood = MoodState.from_state_value(entry.value)
+                decayed_mood = decay_mood(mood, as_of)
+            except ContractValidationError:
+                continue
+            if decayed_mood is not None:
+                content = decayed_mood.to_state_value()
+        if content is None:
+            continue
+        projected.append(
+            {
+                "field": field_name,
+                "content": content,
+                "confidence": entry.confidence,
+                "evidence_ids": [
+                    str(ref.evidence_id) for ref in entry.evidence_refs
+                ],
+            }
+        )
+    return tuple(projected[:4])
 
 
 def estimate_tokens(value: object) -> int:

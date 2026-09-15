@@ -208,13 +208,16 @@ class EmotionState:
         if not isinstance(value, dict):
             raise ContractValidationError("emotion state must be an object")
         try:
+            intensity = value.get("intensity")
+            if intensity is None:
+                intensity = value["initial_intensity"]
             return cls(
                 emotion_id=UUID(str(value["emotion_id"])),
                 target=value["target"],
                 emotion=value["emotion"],
                 valence=value["valence"],
                 scope=value["scope"],
-                intensity=value.get("intensity", value["initial_intensity"]),
+                intensity=intensity,
                 assessed_at=datetime.fromisoformat(value["assessed_at"]),
                 goal_ids=tuple(value.get("goal_ids", ())),
                 half_life_seconds=value.get("half_life_seconds", 3600.0),
