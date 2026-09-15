@@ -214,11 +214,14 @@ class OpenAIResponsesActionModel:
             raw_output = (
                 dump() if callable(dump) else json.dumps({"output_text": raw_output})
             )
-        # Compatible providers may report incomplete while still returning a
-        # complete structured payload; deterministic parsing remains authoritative.
+        # Compatible providers may report incomplete/failed while still returning
+        # a complete structured payload; deterministic parsing remains authoritative.
         provider_status = getattr(response, "status", "completed")
-        if provider_status in {"failed", "cancelled"}:
-            invalid = True
+        if provider_status in {"failed", "cancelled"} and not invalid:
+            try:
+                json.loads(raw_output)
+            except json.JSONDecodeError:
+                invalid = True
         if not invalid and name == "action_proposal":
             try:
                 proposal = json.loads(raw_output)

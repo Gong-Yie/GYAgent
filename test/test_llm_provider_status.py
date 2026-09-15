@@ -89,9 +89,21 @@ def test_action_accepts_usable_output_with_non_completed_status(status):
 
 
 @pytest.mark.parametrize("status", ["failed", "cancelled"])
-def test_dialogue_rejects_hard_failure_status_even_with_output(status):
+def test_dialogue_accepts_hard_failure_status_with_parseable_output(status):
     model = OpenAIResponsesDialogueModel(
         fake_client(status=status, output_text='{"text":"ok"}'),
+        "test-model",
+    )
+
+    output = model._call({}, "instructions", {}, "dialogue_answer", make_context())
+
+    assert output.error_type is None
+
+
+@pytest.mark.parametrize("status", ["failed", "cancelled"])
+def test_dialogue_rejects_hard_failure_status_with_unparseable_output(status):
+    model = OpenAIResponsesDialogueModel(
+        fake_client(status=status, output_text="not-json"),
         "test-model",
     )
 
