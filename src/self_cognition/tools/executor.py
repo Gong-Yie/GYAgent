@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import shutil
-import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -20,6 +19,7 @@ from self_cognition.core.actions import (
 )
 from self_cognition.core.errors import ContractValidationError
 from self_cognition.core.identity import CapabilityKind, CapabilityPermission
+from self_cognition.infrastructure.temp_paths import create_private_temp_dir
 from self_cognition.runtime.run_context import RunContext
 from self_cognition.tools.registry import CapabilityRegistration
 
@@ -64,14 +64,9 @@ class RunSandbox:
         self.cleanup_error: str | None = None
 
     def __enter__(self) -> "RunSandbox":
-        temp_root = self._policy.temp_root
-        if temp_root is not None:
-            temp_root.mkdir(parents=True, exist_ok=True)
-        self.path = Path(
-            tempfile.mkdtemp(
-                prefix=f"run-{self._run_id}-",
-                dir=str(temp_root) if temp_root is not None else None,
-            )
+        self.path = create_private_temp_dir(
+            prefix=f"run-{self._run_id}-",
+            directory=self._policy.temp_root,
         )
         return self
 

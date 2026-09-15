@@ -14,6 +14,10 @@ from uuid import UUID
 from self_cognition.core.errors import MalformedSerializedDataError
 from self_cognition.core.scopes import SubjectScope
 from self_cognition.infrastructure.persistence.atomic_io import atomic_write_text
+from self_cognition.infrastructure.temp_paths import (
+    create_private_temp_dir,
+    temporary_directory,
+)
 from self_cognition.infrastructure.persistence.file_layout import FileDataLayout
 from self_cognition.infrastructure.persistence.file_manifest import (
     FileManifestEntry,
@@ -98,9 +102,9 @@ def create_backup(
     archive_path.parent.mkdir(parents=True, exist_ok=True)
 
     snapshot = _snapshot(source_path)
-    with tempfile.TemporaryDirectory(
+    with temporary_directory(
         prefix=".self-cognition-backup-",
-        dir=archive_path.parent,
+        directory=archive_path.parent,
     ) as temporary:
         staging = Path(temporary) / "payload"
         staging.mkdir()
@@ -129,11 +133,9 @@ def restore_backup(archive: str | Path, target: str | Path) -> BackupResult:
     if target_path.exists():
         raise FileExistsError(f"restore target already exists: {target_path}")
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = Path(
-        tempfile.mkdtemp(
-            prefix=f".{target_path.name}-restore-",
-            dir=target_path.parent,
-        )
+    temporary = create_private_temp_dir(
+        prefix=f".{target_path.name}-restore-",
+        directory=target_path.parent,
     )
     try:
         _extract_zip(archive_path, temporary)
@@ -161,9 +163,9 @@ def migrate_data(
     if target_path.exists():
         raise FileExistsError(f"migration target already exists: {target_path}")
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
+    with temporary_directory(
         prefix=".self-cognition-migration-",
-        dir=target_path.parent,
+        directory=target_path.parent,
     ) as temporary:
         temporary_path = Path(temporary)
         archive = temporary_path / "source.zip"
