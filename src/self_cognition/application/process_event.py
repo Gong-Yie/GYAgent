@@ -34,6 +34,7 @@ from self_cognition.core.runs import RunKind, RunStatus
 from self_cognition.core.protocols import (
     EvidenceRepository,
     EventStore,
+    GovernanceRepository,
     ProcessJournal,
     StateRepository,
 )
@@ -60,6 +61,7 @@ class ProcessEventService:
         memory_encoding: MemoryEncodingService | None = None,
         run_lifecycle: RunLifecycle | None = None,
         metrics: MetricsRegistry | None = None,
+        governance: GovernanceRepository | None = None,
     ) -> None:
         self._event_store = event_store
         self._evidence_repository = evidence_repository
@@ -69,6 +71,7 @@ class ProcessEventService:
         self._memory_encoding = memory_encoding
         self._run_lifecycle = run_lifecycle
         self._metrics = metrics
+        self._governance = governance
 
     def process(
         self,
@@ -290,11 +293,17 @@ class ProcessEventService:
                 )
             stored_results = self._stored_cognition_results(recorded_event)
             reusable_results = self._reusable_results(stored_results)
+            disabled_modules = frozenset()
+            if self._governance is not None:
+                disabled_modules = self._governance.load_controls(
+                    recorded_event.subject
+                ).disabled_modules
             cognition_results = self._engine.analyze(
                 recorded_event,
                 old_state,
                 context,
                 existing_results=reusable_results,
+                excluded_module_ids=disabled_modules,
             )
             new_results = tuple(
                 result

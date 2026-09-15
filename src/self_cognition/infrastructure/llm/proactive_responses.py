@@ -5,7 +5,7 @@ from typing import Any
 
 from self_cognition.core.errors import ModelOutputError, ModelTimeoutError
 from self_cognition.core.events import EventEnvelope
-from self_cognition.core.proactivity import MotiveProposal
+from self_cognition.core.proactivity import MotiveProposal, ProactiveIntention
 from self_cognition.core.workspace import WorkspacePacket, workspace_model_context
 from self_cognition.runtime.run_context import RunContext
 
@@ -33,6 +33,14 @@ PROACTIVE_SCHEMA = {
         "valid_for_seconds",
         "evidence_ids",
     ],
+}
+
+
+PROACTIVE_EXPRESSION_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {"text": {"type": "string"}},
+    "required": ["text"],
 }
 
 
@@ -76,6 +84,60 @@ class OpenAIResponsesProactivityModel:
             max_output_tokens=max_output_tokens,
             temperature=temperature,
         )
+
+    def express(
+        self,
+        intention: ProactiveIntention,
+        workspace: WorkspacePacket,
+        context: RunContext,
+    ) -> str:
+        remaining = (context.deadline - context.clock.now()).total_seconds()
+        timeout = min(self._timeout_seconds, remaining)
+        if timeout <= 0:
+            raise ModelTimeoutError("proactivity expression deadline reached")
+        response = self._client.responses.create(
+            model=self._model,
+            instructions=(
+                "Write one short, natural message that expresses the supplied "
+                "proactive intention to the target user. Use only the bounded "
+                "workspace. Do not execute tools, claim results, invent memories, "
+                "or disclose secrets. Respect the relationship and disclosure "
+                "intent. Return only a JSON object with one text field."
+            ),
+            input=json.dumps(
+                {
+                    "intention": intention.to_state_value(),
+                    "motive_kind": intention.motive.kind,
+                    "motive_description": intention.motive.description,
+                    "workspace": workspace_model_context(workspace),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "proactive_expression",
+                    "schema": PROACTIVE_EXPRESSION_SCHEMA,
+                    "strict": True,
+                }
+            },
+            temperature=self._temperature,
+            max_output_tokens=self._max_output_tokens,
+            timeout=timeout,
+        )
+        context.record_model_usage(response)
+        output = getattr(response, "output_text", None)
+        if not isinstance(output, str) or not output.strip():
+            raise ModelOutputError("proactivity expression returned no output")
+        try:
+            values = json.loads(output)
+            text = str(values["text"]).strip()
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+            raise ModelOutputError("proactivity expression output is invalid") from error
+        if not text:
+            raise ModelOutputError("proactivity expression text is blank")
+        return text
 
     def propose(
         self,

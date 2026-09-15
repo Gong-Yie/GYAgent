@@ -280,6 +280,7 @@ class ProactiveIntentionService:
         *,
         as_of: datetime,
         context: RunContext | None = None,
+        workspace: WorkspacePacket | None = None,
     ) -> tuple[ProactiveDecisionResult, ...]:
         decisions = {
             event.payload.intention_id: event.payload.decision
@@ -300,7 +301,7 @@ class ProactiveIntentionService:
                 "scheduled proactive intention became due",
                 state_version=intention.state_version,
                 idempotency_key="scheduled-accept",
-                response=intention.expected_behavior,
+                response=self._expression_for(intention, workspace, context),
                 context=context,
             )
             results.append(result)
@@ -596,6 +597,23 @@ class ProactiveIntentionService:
         self._events.append(event)
         if self._evidence is not None:
             self._evidence.append(EvidenceRef.for_event(event))
+
+    def _expression_for(
+        self,
+        intention: ProactiveIntention,
+        workspace: WorkspacePacket | None,
+        context: RunContext | None,
+    ) -> str:
+        if workspace is None or context is None or self._model is None:
+            return intention.expected_behavior
+        express = getattr(self._model, "express", None)
+        if not callable(express):
+            return intention.expected_behavior
+        try:
+            text = express(intention, workspace, context)
+        except Exception:
+            return intention.expected_behavior
+        return text.strip() or intention.expected_behavior
 
     def _create_mailbox_message(
         self,

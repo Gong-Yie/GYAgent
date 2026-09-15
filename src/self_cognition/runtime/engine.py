@@ -59,6 +59,7 @@ class CognitionEngine:
         state: SubjectState,
         context: RunContext | None = None,
         existing_results: tuple[CognitionModuleResult, ...] = (),
+        excluded_module_ids: frozenset[str] = frozenset(),
     ) -> tuple[CognitionModuleResult, ...]:
         request = CognitionRequest(
             event=event,
@@ -75,6 +76,8 @@ class CognitionEngine:
             result.module_id: result for result in existing_results
         }
         for binding in self._active_bindings():
+            if binding.module_id in excluded_module_ids:
+                continue
             module = binding.module
             subscriptions = getattr(module, "subscriptions")
             if event.event_type not in subscriptions:

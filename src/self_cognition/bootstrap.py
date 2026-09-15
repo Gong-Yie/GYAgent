@@ -344,6 +344,7 @@ def build_container(
         memory_encoding=memory_encoding,
         run_lifecycle=run_lifecycle,
         metrics=metrics,
+        governance=governance,
     )
     proactive = ProactiveIntentionService(
         event_store,
@@ -371,7 +372,20 @@ def build_container(
                 new_correlation_id(),
                 now + timedelta(seconds=30),
             )
-            proactive.consume_due(subject, as_of=now, context=context)
+            state = state_repository.load(subject) or SubjectState.empty(
+                subject.subject.subject_id,
+                mind_id=subject.mind.mind_id,
+                subject_kind=subject.subject.kind,
+            )
+            workspace = workspace_builder.build(
+                f"时间唤醒：{now.isoformat()}", state
+            )
+            proactive.consume_due(
+                subject,
+                as_of=now,
+                context=context,
+                workspace=workspace,
+            )
             active = proactive.active(subject, as_of=now)
             if not active:
                 continue
@@ -388,14 +402,6 @@ def build_container(
             )
             event_store.append(event)
             last_reassessment[subject] = event.recorded_at
-            state = state_repository.load(subject) or SubjectState.empty(
-                subject.subject.subject_id,
-                mind_id=subject.mind.mind_id,
-                subject_kind=subject.subject.kind,
-            )
-            workspace = workspace_builder.build(
-                f"时间唤醒：{now.isoformat()}", state
-            )
             proactive.evaluate(event, workspace, context)
 
     scheduler = DualLoopScheduler(

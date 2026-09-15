@@ -77,3 +77,45 @@ def test_non_boredom_does_not_form_social_motive():
     )
 
     assert service.form_boredom_social_motive(event, workspace, _context()) is None
+class _FakeExpressionModel:
+    def propose(self, *args, **kwargs):
+        raise AssertionError("motive formation is not used by this test")
+
+    def express(self, intention, workspace, context):
+        return "我有点无聊，想和你聊聊天。"
+
+
+def test_due_social_intention_uses_dynamic_expression():
+    store = InMemoryEventStore()
+    service = ProactiveIntentionService(store, model=_FakeExpressionModel())
+    event = EventEnvelope.user_message("user-1", "好无聊，想找人说说话")
+    workspace = WorkspacePacket(
+        "user-1",
+        0,
+        (),
+        fixed_context=WorkspaceFixedContext(
+            emotion=(
+                {
+                    "field": "mood.current",
+                    "content": {
+                        "emotion": "boredom",
+                        "valence": "negative",
+                        "arousal": 0.1,
+                    },
+                },
+            )
+        ),
+    )
+    context = _context()
+
+    service.form_boredom_social_motive(event, workspace, context)
+    service.consume_due(
+        event.subject,
+        as_of=context.clock.now(),
+        context=context,
+        workspace=workspace,
+    )
+
+    messages = service.mailbox(event.subject, as_of=context.clock.now())
+    assert messages
+    assert messages[0]["text"] == "我有点无聊，想和你聊聊天。"
