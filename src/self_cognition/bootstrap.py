@@ -152,7 +152,14 @@ from self_cognition.settings import (
 )
 from self_cognition.core.time import SYSTEM_CLOCK
 from self_cognition.tools.registry import CapabilityRegistry
-from self_cognition.tools.executor import FileReadToolExecutor, ToolExecutor
+from self_cognition.tools.executor import (
+    FileReadToolExecutor,
+    ToolExecutionPolicy,
+    ToolExecutor,
+    ToolRouterExecutor,
+    WorkspaceShellExecutor,
+    WorkspaceWebSearchExecutor,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -445,6 +452,18 @@ def build_container(
         else selected_dialogue_model
     )
     capability_registry = CapabilityRegistry()
+    if tool_executor is None:
+        policy = ToolExecutionPolicy(
+            (Path.cwd() / "workspace",),
+            network_enabled=True,
+        )
+        shell = WorkspaceShellExecutor(policy)
+        search = WorkspaceWebSearchExecutor(policy)
+        tool_executor = ToolRouterExecutor(
+            {shell.tool_id: shell, search.tool_id: search}
+        )
+        capability_registry.register(shell.registration)
+        capability_registry.register(search.registration)
     if isinstance(tool_executor, FileReadToolExecutor):
         capability_registry.register(tool_executor.registration)
     selected_planning_model = planning_model or RulePlanningModel()
@@ -454,7 +473,10 @@ def build_container(
             ModelRegistration("dialogue", "dialogue-default", dialogue_adapter),
             ModelRegistration("planning", "planning-default", selected_planning_model),
             ModelRegistration("action", "action-default", selected_action_model),
-        )
+        ),
+        disabled_provider_loader=lambda subject: governance.load_controls(
+            subject
+        ).disabled_model_providers,
     )
     converse = ConverseService(
         process_event,

@@ -148,8 +148,29 @@ class UserControlService:
 
     def export(self, subject: SubjectScope, *, requester: SubjectScope | None = None, export_id: UUID | None = None) -> ExportResult:
         self._authorize(subject, requester)
-        events = self._events.read_by_mind(subject.mind) if subject.subject.kind is SubjectKind.MIND else self._events.read_by_subject(subject)
-        memories = self._memories.read_by_mind(subject.mind) if subject.subject.kind is SubjectKind.MIND else self._memories.read_by_subject(subject)
+        all_events = self._events.read_by_mind(subject.mind)
+        related_event_ids = {
+            item.event_id for item in all_events if item.subject == subject
+        }
+        events = tuple(
+            item
+            for item in all_events
+            if item.subject == subject
+            or (
+                subject.subject.kind is SubjectKind.USER
+                and (
+                    getattr(item.payload, "recipient", None) == subject
+                    or getattr(item.payload, "request_event_id", None) in related_event_ids
+                )
+            )
+        )
+        all_memories = self._memories.read_by_mind(subject.mind)
+        memories = tuple(
+            item
+            for item in all_memories
+            if item.subject == subject
+            or item.subject == SubjectScope.for_mind(subject.mind.mind_id)
+        )
         states = self._states_for(subject, events, memories)
         runs = self._runs.read_by_subject(subject)
         audits = self._governance.read_audit(subject)
@@ -213,6 +234,18 @@ class UserControlService:
         self._audit(AuditAction.CONTROL, subject, "model_provider", provider_id, {"enabled": False})
         return controls
 
+    def enable_model_provider(
+        self,
+        subject: SubjectScope,
+        provider_id: str,
+        *,
+        requester: SubjectScope | None = None,
+    ) -> UserControls:
+        self._authorize(subject, requester)
+        controls = self._update(subject, "disabled_model_providers", provider_id, False)
+        self._audit(AuditAction.CONTROL, subject, "model_provider", provider_id, {"enabled": True})
+        return controls
+
     def disable_proactive_task(self, subject: SubjectScope, task_id: str, *, requester: SubjectScope | None = None) -> UserControls:
         self._authorize(subject, requester)
         controls = self._update(subject, "disabled_proactive_tasks", task_id, True)
@@ -249,7 +282,7 @@ class UserControlService:
                 self._proactive.cancel(subject, intention.intention_id, reason)
 
     def _states_for(self, subject: SubjectScope, events: tuple[EventEnvelope, ...], memories: tuple[MemoryRecord, ...]):
-        scopes = {item.subject for item in events} | {item.subject for item in memories} | {subject}
+        scopes = {subject, SubjectScope.for_mind(subject.mind.mind_id)}
         return tuple(state for scope in scopes if (state := self._states.load(scope)) is not None)
 
     def _evidence_for(self, subject, events, memories, states):

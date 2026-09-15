@@ -43,6 +43,8 @@ from self_cognition.core.plans import (
     GoalPlannedPayload,
     PlanRevisedPayload,
     PlanStep,
+    PlanStepResult,
+    PlanStepResultStatus,
 )
 from self_cognition.core.runs import RunKind, RunStatus
 from self_cognition.core.protocols import EventStore, GovernanceRepository, StateRepository
@@ -341,9 +343,43 @@ class ActionService:
         )
 
     def _reflow_result(self, event: EventEnvelope, context: RunContext) -> None:
+        payload = event.payload
+        if not isinstance(payload, ActionResultPayload):
+            return
+        result = payload.result
+        status = {
+            ActionResultStatus.SUCCEEDED: PlanStepResultStatus.SUCCEEDED,
+            ActionResultStatus.PARTIAL: PlanStepResultStatus.FAILED,
+            ActionResultStatus.FAILED: PlanStepResultStatus.FAILED,
+            ActionResultStatus.CANCELLED: PlanStepResultStatus.CANCELLED,
+            ActionResultStatus.TIMED_OUT: PlanStepResultStatus.FAILED,
+        }[result.status]
+        try:
+            decision_event = next(
+                event
+                for event in self._events.read_by_subject(result.owner)
+                if isinstance(event.payload, ActionDecisionPayload)
+                and event.payload.request.action_id == result.action_id
+            )
+            request = decision_event.payload.request
+            self._goals.record_step_result(
+                result.owner,
+                PlanStepResult(
+                    uuid5(result.result_id, "plan-step-result"),
+                    request.plan_id,
+                    request.plan_version,
+                    request.step_id,
+                    status,
+                    result.summary,
+                    result.recorded_at,
+                ),
+                context,
+            )
+        except (ContractValidationError, StopIteration):
+            logger.exception("action result plan progress update failed")
+        child = context.child(new_run_id(), correlation_id=context.correlation_id)
         if self._process_event is None:
             return
-        child = context.child(new_run_id(), correlation_id=context.correlation_id)
         try:
             self._process_event.process(
                 replace(event, run_id=None, correlation_id=None),

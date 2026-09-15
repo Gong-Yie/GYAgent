@@ -211,6 +211,38 @@ def _handle(container: ApplicationContainer, method: str, path: str, query: dict
         return state_to_dict(state) if state is not None else {"version": 0, "entries": {}}
     if method == "GET" and path == "/settings":
         return {"controls": _jsonable(container.user_control.controls(subject))}
+    if method == "POST" and path == "/settings":
+        action = _text(body, "action")
+        if action == "disable_model_provider":
+            controls = container.user_control.disable_model_provider(
+                subject, _text(body, "provider_id")
+            )
+        elif action == "enable_model_provider":
+            controls = container.user_control.enable_model_provider(
+                subject, _text(body, "provider_id")
+            )
+        elif action == "disable_module":
+            controls = container.user_control.disable_module(
+                subject, _text(body, "module_id")
+            )
+        elif action == "disable_proactive_task":
+            controls = container.user_control.disable_proactive_task(
+                subject, _text(body, "task_id")
+            )
+        elif action == "disable_proactive_channel":
+            controls = container.user_control.disable_proactive_channel(
+                subject, str(body.get("channel_id", "default"))
+            )
+        elif action == "set_proactive_frequency":
+            frequency = body.get("limit_per_hour")
+            if frequency is not None and (isinstance(frequency, bool) or not isinstance(frequency, int)):
+                raise ValueError("limit_per_hour must be an integer or null")
+            controls = container.user_control.set_proactive_frequency(
+                subject, frequency
+            )
+        else:
+            raise ValueError("unsupported settings action")
+        return {"controls": _jsonable(controls)}
     if method == "GET" and path == "/runs":
         return {"runs": [run_to_dict(item) for item in container.run_repository.read_by_subject(subject)]}
     if method == "POST" and path.startswith("/runs/") and path.endswith("/cancel"):

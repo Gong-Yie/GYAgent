@@ -82,6 +82,21 @@ class RunContext:
             raise RunBudgetExceededError("tool call budget exceeded")
         self.usage = replace(self.usage, tool_calls=next_count)
 
+    def record_model_usage(self, response: object) -> None:
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+        prompt = _usage_int(usage, "input_tokens", "prompt_tokens")
+        completion = _usage_int(usage, "output_tokens", "completion_tokens")
+        details = getattr(usage, "output_tokens_details", None)
+        reasoning = _usage_int(details, "reasoning_tokens")
+        self.usage = replace(
+            self.usage,
+            input_tokens=self.usage.input_tokens + prompt,
+            output_tokens=self.usage.output_tokens + completion,
+            reasoning_tokens=self.usage.reasoning_tokens + reasoning,
+        )
+
     def emit_event(self, event: EventEnvelope) -> None:
         self._emitted_events.append(event)
 
@@ -89,3 +104,15 @@ class RunContext:
         events = tuple(self._emitted_events)
         self._emitted_events.clear()
         return events
+
+
+def _usage_int(value: object, *names: str) -> int:
+    for name in names:
+        raw = getattr(value, name, None)
+        if isinstance(raw, int) and raw >= 0:
+            return raw
+        if isinstance(value, dict):
+            raw = value.get(name)
+            if isinstance(raw, int) and raw >= 0:
+                return raw
+    return 0

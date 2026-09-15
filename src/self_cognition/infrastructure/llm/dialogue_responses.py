@@ -252,6 +252,7 @@ class OpenAIResponsesDialogueModel:
                 temperature=self._temperature,
                 max_output_tokens=self._max_output_tokens,
             )
+            context.record_model_usage(response)
         except Exception as error:
             if type(error).__name__ in {"APITimeoutError", "TimeoutError"}:
                 raise ModelTimeoutError("dialogue model timed out") from error

@@ -59,11 +59,17 @@ class RunBudget:
 class RunUsage:
     model_calls: int = 0
     tool_calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    reasoning_tokens: int = 0
 
     def __post_init__(self) -> None:
         for name, value in (
             ("model_calls", self.model_calls),
             ("tool_calls", self.tool_calls),
+            ("input_tokens", self.input_tokens),
+            ("output_tokens", self.output_tokens),
+            ("reasoning_tokens", self.reasoning_tokens),
         ):
             if not isinstance(value, int) or value < 0:
                 raise ContractValidationError(f"{name} must be non-negative")
@@ -214,6 +220,9 @@ def run_to_dict(record: RunRecord) -> dict[str, Any]:
         "usage": {
             "model_calls": record.usage.model_calls,
             "tool_calls": record.usage.tool_calls,
+            "input_tokens": record.usage.input_tokens,
+            "output_tokens": record.usage.output_tokens,
+            "reasoning_tokens": record.usage.reasoning_tokens,
         },
         "checkpoint": _checkpoint_to_dict(record.checkpoint),
         "input_event_ids": [str(value) for value in record.input_event_ids],
@@ -266,6 +275,9 @@ def run_from_dict(data: object) -> RunRecord:
             usage=RunUsage(
                 model_calls=int(usage_data.get("model_calls", 0)),
                 tool_calls=int(usage_data.get("tool_calls", 0)),
+                input_tokens=int(usage_data.get("input_tokens", 0)),
+                output_tokens=int(usage_data.get("output_tokens", 0)),
+                reasoning_tokens=int(usage_data.get("reasoning_tokens", 0)),
             ),
             checkpoint=_checkpoint_from_dict(data.get("checkpoint")),
             input_event_ids=tuple(

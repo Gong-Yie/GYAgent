@@ -42,7 +42,7 @@ def main(argv: list[str] | None = None, *, container: ApplicationContainer | Non
 
 
 def _command_args(argv: list[str]) -> tuple[str | None, list[str]]:
-    aliases = {"chat", "worker", "proactive", "mailbox", "mailbox-ack", "memory", "memories", "correct", "export", "forget-dry-run", "forget", "replay", "doctor", "approve"}
+    aliases = {"chat", "worker", "proactive", "mailbox", "mailbox-ack", "memory", "memories", "correct", "export", "forget-dry-run", "forget", "replay", "doctor", "approve", "settings"}
     return (argv[0], argv[1:]) if argv and argv[0] in aliases else (None, argv)
 
 
@@ -102,6 +102,12 @@ def _run_command(command: str, argv: list[str], container: ApplicationContainer 
     parser.add_argument("--cognition-type", default="preference")
     parser.add_argument("--action-id")
     parser.add_argument("--message-id")
+    parser.add_argument("--action")
+    parser.add_argument("--provider-id")
+    parser.add_argument("--module-id")
+    parser.add_argument("--task-id")
+    parser.add_argument("--channel-id", default="default")
+    parser.add_argument("--limit-per-hour", type=int)
     args = parser.parse_args(argv)
     dependencies = container or build_container(args.data_dir)
     subject = SubjectScope.legacy_user(args.subject_id)
@@ -152,6 +158,23 @@ def _run_command(command: str, argv: list[str], container: ApplicationContainer 
             payload = state_to_dict(dependencies.replay.replay(subject))
         elif command == "doctor":
             payload = dependencies.health.check().as_dict()
+        elif command == "settings":
+            controls = dependencies.user_control.controls(subject)
+            if args.action == "disable_model_provider":
+                controls = dependencies.user_control.disable_model_provider(subject, args.provider_id or "")
+            elif args.action == "enable_model_provider":
+                controls = dependencies.user_control.enable_model_provider(subject, args.provider_id or "")
+            elif args.action == "disable_module":
+                controls = dependencies.user_control.disable_module(subject, args.module_id or "")
+            elif args.action == "disable_proactive_task":
+                controls = dependencies.user_control.disable_proactive_task(subject, args.task_id or "")
+            elif args.action == "disable_proactive_channel":
+                controls = dependencies.user_control.disable_proactive_channel(subject, args.channel_id)
+            elif args.action == "set_proactive_frequency":
+                controls = dependencies.user_control.set_proactive_frequency(subject, args.limit_per_hour)
+            elif args.action:
+                raise ValueError("unsupported settings action")
+            payload = _jsonable(controls)
         elif command == "approve":
             if not args.action_id:
                 raise ValueError("--action-id is required")

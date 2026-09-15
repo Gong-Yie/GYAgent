@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
 from dataclasses import dataclass, field
+from urllib.error import URLError
+from urllib.parse import quote_plus
+from urllib.request import Request, urlopen
 from datetime import datetime, timedelta
 from pathlib import Path
 from threading import RLock
@@ -28,7 +32,7 @@ from self_cognition.tools.registry import CapabilityRegistration
 class ToolExecutionPolicy:
     allowed_roots: tuple[Path, ...]
     network_enabled: bool = False
-    timeout_seconds: float = 30.0
+    timeout_seconds: float = 300.0
     max_processes: int = 1
     max_output_bytes: int = 64 * 1024
     temp_root: Path | None = None
@@ -41,6 +45,8 @@ class ToolExecutionPolicy:
             raise ContractValidationError("allowed roots must be pathlib paths")
         if self.timeout_seconds <= 0:
             raise ContractValidationError("tool timeout must be positive")
+        if self.timeout_seconds > 600.0:
+            raise ContractValidationError("tool timeout must not exceed 600 seconds")
         if self.max_processes < 1:
             raise ContractValidationError("max_processes must be positive")
         if self.max_output_bytes < 1:
@@ -54,6 +60,16 @@ class ToolExecutionPolicy:
     @property
     def resolved_roots(self) -> tuple[Path, ...]:
         return tuple(root.resolve() for root in self.allowed_roots)
+
+    def timeout_for(self, arguments: Mapping[str, object]) -> float:
+        value = arguments.get("timeout", self.timeout_seconds)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ContractValidationError("tool timeout must be numeric")
+        if value <= 0 or value > 600.0:
+            raise ContractValidationError(
+                "tool timeout must be between 0 and 600 seconds"
+            )
+        return min(float(value), self.timeout_seconds)
 
 
 class RunSandbox:
@@ -90,6 +106,89 @@ class ToolExecutor(Protocol):
 
 
 @dataclass(slots=True)
+class ToolRouterExecutor:
+    executors: Mapping[str, ToolExecutor]
+
+    def execute(
+        self,
+        action: ActionRequest,
+        decision: ActionDecision,
+        context: RunContext,
+    ) -> ActionResult:
+        executor = self.executors.get(action.tool_id)
+        if executor is None:
+            raise ContractValidationError(f"no executor is registered for {action.tool_id}")
+        return executor.execute(action, decision, context)
+
+
+@dataclass(slots=True)
+class WorkspaceShellExecutor:
+    policy: ToolExecutionPolicy
+    tool_id: str = "workspace.shell"
+
+    @property
+    def descriptor(self) -> ToolDescriptor:
+        return ToolDescriptor(self.tool_id, "Workspace shell", "Run a bounded command in workspace", {"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"number"}},"required":["command"],"additionalProperties":False}, {"type":"object"}, ())
+
+    @property
+    def registration(self) -> CapabilityRegistration:
+        return CapabilityRegistration(self.tool_id, self.descriptor.name, CapabilityKind.TOOL, CapabilityPermission.GRANTED, description=self.descriptor.description, input_schema=dict(self.descriptor.input_schema), output_schema=dict(self.descriptor.output_schema))
+
+    def execute(self, action: ActionRequest, decision: ActionDecision, context: RunContext) -> ActionResult:
+        if action.tool_id != self.tool_id or decision.status is not ActionDecisionStatus.ALLOWED:
+            raise ContractValidationError("shell action is not allowed")
+        if decision.one_time_scope != action.action_id:
+            raise ContractValidationError("shell decision scope does not match action")
+        if context.cancelled:
+            return ActionResult(uuid5(action.action_id, "tool-result"), action.action_id, action.owner, ActionResultStatus.CANCELLED, "shell command cancelled", None, (), context.clock.now())
+        command = action.arguments.get("command")
+        if not isinstance(command, str) or not command.strip():
+            raise ContractValidationError("shell command is required")
+        if any(token.lower() in {"del", "erase", "format", "shutdown", "reboot", "sudo", "rm"} for token in command.split()):
+            raise ContractValidationError("shell command is blocked")
+        try:
+            completed = subprocess.run(command, cwd=self.policy.resolved_roots[0], shell=True, capture_output=True, text=True, timeout=self.policy.timeout_for(action.arguments), check=False)
+            output = {"returncode": completed.returncode, "stdout": completed.stdout[: self.policy.max_output_bytes], "stderr": completed.stderr[: self.policy.max_output_bytes]}
+            return ActionResult(uuid5(action.action_id, "tool-result"), action.action_id, action.owner, ActionResultStatus.SUCCEEDED if completed.returncode == 0 else ActionResultStatus.FAILED, "shell command completed", output, (), context.clock.now(), None if completed.returncode == 0 else "CommandFailed")
+        except subprocess.TimeoutExpired:
+            return ActionResult(uuid5(action.action_id, "tool-result"), action.action_id, action.owner, ActionResultStatus.TIMED_OUT, "shell command timed out", None, (), context.clock.now(), "ToolTimeout")
+
+
+@dataclass(slots=True)
+class WorkspaceWebSearchExecutor:
+    policy: ToolExecutionPolicy
+    tool_id: str = "workspace.web_search"
+
+    @property
+    def descriptor(self) -> ToolDescriptor:
+        return ToolDescriptor(self.tool_id, "Web search", "Search the public web", {"type":"object","properties":{"query":{"type":"string"},"timeout":{"type":"number"}},"required":["query"],"additionalProperties":False}, {"type":"object"}, ())
+
+    @property
+    def registration(self) -> CapabilityRegistration:
+        return CapabilityRegistration(self.tool_id, self.descriptor.name, CapabilityKind.TOOL, CapabilityPermission.GRANTED, description=self.descriptor.description, input_schema=dict(self.descriptor.input_schema), output_schema=dict(self.descriptor.output_schema))
+
+    def execute(self, action: ActionRequest, decision: ActionDecision, context: RunContext) -> ActionResult:
+        if action.tool_id != self.tool_id or decision.status is not ActionDecisionStatus.ALLOWED:
+            raise ContractValidationError("web search action is not allowed")
+        if decision.one_time_scope != action.action_id:
+            raise ContractValidationError("search decision scope does not match action")
+        if context.cancelled:
+            return ActionResult(uuid5(action.action_id, "tool-result"), action.action_id, action.owner, ActionResultStatus.CANCELLED, "web search cancelled", None, (), context.clock.now())
+        query = action.arguments.get("query")
+        if not self.policy.network_enabled or not isinstance(query, str) or not query.strip():
+            raise ContractValidationError("web search is disabled or query is invalid")
+        try:
+            request = Request("https://www.baidu.com/s?wd=" + quote_plus(query), headers={"User-Agent": "self-cognition-agent/1.0"})
+            with urlopen(request, timeout=self.policy.timeout_for(action.arguments)) as response:
+                content = response.read(self.policy.max_output_bytes).decode("utf-8", errors="replace")
+            return ActionResult(uuid5(action.action_id, "tool-result"), action.action_id, action.owner, ActionResultStatus.SUCCEEDED, "web search completed", {"query": query, "content": content}, (), context.clock.now())
+        except (TimeoutError, URLError) as error:
+            if isinstance(error, URLError) and not isinstance(error.reason, TimeoutError):
+                return ActionResult(uuid5(action.action_id, "tool-result"), action.action_id, action.owner, ActionResultStatus.FAILED, "web search failed", None, (), context.clock.now(), type(error.reason).__name__)
+            return ActionResult(uuid5(action.action_id, "tool-result"), action.action_id, action.owner, ActionResultStatus.TIMED_OUT, "web search timed out", None, (), context.clock.now(), "ToolTimeout")
+
+
+@dataclass(slots=True)
 class FileReadToolExecutor:
     policy: ToolExecutionPolicy
     tool_id: str = "file.read"
@@ -103,7 +202,10 @@ class FileReadToolExecutor:
             "Read UTF-8 text from an explicitly allowed root.",
             {
                 "type": "object",
-                "properties": {"path": {"type": "string"}},
+                "properties": {
+                    "path": {"type": "string"},
+                    "timeout": {"type": "number"},
+                },
                 "required": ["path"],
                 "additionalProperties": False,
             },
@@ -144,7 +246,8 @@ class FileReadToolExecutor:
             self._validate_request(action, decision, context)
             execution_deadline = min(
                 context.deadline,
-                context.clock.now() + timedelta(seconds=self.policy.timeout_seconds),
+                context.clock.now()
+                + timedelta(seconds=self.policy.timeout_for(action.arguments)),
             )
             result: ActionResult
             with RunSandbox(self.policy, context.run_id) as sandbox:
@@ -247,7 +350,9 @@ class FileReadToolExecutor:
             return result
 
     def _resolve_path(self, arguments: Mapping[str, object]) -> Path:
-        if set(arguments) != {"path"} or not isinstance(arguments["path"], str):
+        if set(arguments) - {"path", "timeout"} or not isinstance(
+            arguments.get("path"), str
+        ):
             raise ContractValidationError("file.read arguments must contain only path")
         relative = Path(arguments["path"])
         if relative.is_absolute() or not str(relative).strip():

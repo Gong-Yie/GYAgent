@@ -113,6 +113,7 @@ class OpenAIResponsesProactivityModel:
             max_output_tokens=self._max_output_tokens,
             timeout=timeout,
         )
+        context.record_model_usage(response)
         output = getattr(response, "output_text", None)
         if not isinstance(output, str) or not output.strip():
             raise ModelOutputError("proactivity model returned no output")

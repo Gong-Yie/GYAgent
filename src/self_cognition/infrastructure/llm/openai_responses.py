@@ -204,6 +204,7 @@ class OpenAIResponsesCognitionModel:
                 store=False,
                 timeout=timeout,
             )
+            context.record_model_usage(response)
         except Exception as error:
             if type(error).__name__ in {"APITimeoutError", "TimeoutError"}:
                 raise ModelTimeoutError("cognition model timed out") from error

@@ -23,9 +23,15 @@ class ModelRegistration:
 
 
 class ModelRouter:
-    def __init__(self, registrations: tuple[ModelRegistration, ...] = ()) -> None:
+    def __init__(
+        self,
+        registrations: tuple[ModelRegistration, ...] = (),
+        *,
+        disabled_provider_loader: Callable[[object], frozenset[str]] | None = None,
+    ) -> None:
         self._registrations: dict[tuple[str, str], ModelRegistration] = {}
         self._lock = RLock()
+        self._disabled_provider_loader = disabled_provider_loader
         for registration in registrations:
             self.register(registration)
 
@@ -40,16 +46,30 @@ class ModelRouter:
                 raise ValueError(f"model registration already exists: {key}")
             self._registrations[key] = registration
 
-    def select(self, task: str, context: RunContext | None = None) -> ModelRegistration:
+    def select(
+        self,
+        task: str,
+        context: RunContext | None = None,
+        *,
+        subject: object | None = None,
+    ) -> ModelRegistration:
         if context is not None:
             limit = context.budget.max_model_calls
             if limit is not None and context.usage.model_calls >= limit:
                 raise RunBudgetExceededError("model call budget exceeded")
         with self._lock:
+            disabled = (
+                self._disabled_provider_loader(subject)
+                if subject is not None and self._disabled_provider_loader is not None
+                else frozenset()
+            )
             candidates = [
                 item
                 for item in self._registrations.values()
-                if item.task == task and item.enabled and item.healthy
+                if item.task == task
+                and item.enabled
+                and item.healthy
+                and item.provider_id not in disabled
             ]
         if not candidates:
             raise LookupError(f"no healthy model is registered for task: {task}")
@@ -122,7 +142,7 @@ class RoutedDialogueModel:
         self._attempts = attempts
 
     def generate(self, workspace, context):
-        registration = self._router.select("dialogue", context)
+        registration = self._router.select("dialogue", context, subject=getattr(workspace, "subject", None))
         return _call_registration(
             self._router,
             registration,
@@ -131,7 +151,7 @@ class RoutedDialogueModel:
         )
 
     def repair_review(self, workspace, draft, previous, error, context):
-        registration = self._router.select("dialogue", context)
+        registration = self._router.select("dialogue", context, subject=getattr(workspace, "subject", None))
         repair = getattr(registration.model, "repair_review", None)
         if repair is None:
             return None
@@ -143,7 +163,7 @@ class RoutedDialogueModel:
         )
 
     def repair(self, workspace, previous, error, context):
-        registration = self._router.select("dialogue", context)
+        registration = self._router.select("dialogue", context, subject=getattr(workspace, "subject", None))
         repair = getattr(registration.model, "repair", None)
         if repair is None:
             return None
@@ -155,7 +175,7 @@ class RoutedDialogueModel:
         )
 
     def review(self, workspace, draft, context):
-        registration = self._router.select("dialogue", context)
+        registration = self._router.select("dialogue", context, subject=getattr(workspace, "subject", None))
         return _call_registration(
             self._router,
             registration,
@@ -170,7 +190,7 @@ class RoutedPlanningModel:
         self._attempts = attempts
 
     def repair(self, goal, budget, workspace, capabilities, previous, error, context):
-        registration = self._router.select("planning", context)
+        registration = self._router.select("planning", context, subject=getattr(workspace, "subject", None))
         repair = getattr(registration.model, "repair", None)
         if repair is None:
             return None
@@ -182,7 +202,7 @@ class RoutedPlanningModel:
         )
 
     def create(self, goal, budget, workspace, capabilities, context):
-        registration = self._router.select("planning", context)
+        registration = self._router.select("planning", context, subject=getattr(workspace, "subject", None))
         return _call_registration(
             self._router,
             registration,
@@ -191,7 +211,7 @@ class RoutedPlanningModel:
         )
 
     def replan(self, goal, plan, progress, workspace, capabilities, context):
-        registration = self._router.select("planning", context)
+        registration = self._router.select("planning", context, subject=getattr(workspace, "subject", None))
         return _call_registration(
             self._router,
             registration,
@@ -206,7 +226,7 @@ class RoutedActionModel:
         self._attempts = attempts
 
     def propose(self, plan, step, workspace, tools, context):
-        registration = self._router.select("action", context)
+        registration = self._router.select("action", context, subject=getattr(workspace, "subject", None))
         return _call_registration(
             self._router,
             registration,
@@ -215,7 +235,7 @@ class RoutedActionModel:
         )
 
     def decide(self, request, workspace, context):
-        registration = self._router.select("action", context)
+        registration = self._router.select("action", context, subject=getattr(workspace, "subject", None))
         return _call_registration(
             self._router,
             registration,
