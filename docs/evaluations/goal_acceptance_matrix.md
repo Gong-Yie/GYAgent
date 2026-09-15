@@ -1,10 +1,10 @@
 # `goal.md` 验收矩阵
 
 > 更新日期：2026-09-16
-> 当前基线：`main = e1c900f`
-> 离线验证：`442 passed, 2 deselected`
+> 当前基线：`main = 02e1ed6`
+> 离线验证：`467 passed, 2 deselected`
 > 真实模型：`live_openai` 此前 2 项通过
-> 真实双回路：确定性长矩阵通过；60 分钟真实双回路 20 个事件、2 条 `social_connection` Mailbox、backlog 0、死信 0、worker 未死、stop 前 health ready=true
+> 真实双回路：最终 60 分钟 20 个事件、20/20 对话成功、`dialogue.failed=0`、backlog 峰值 1/最终 0、死信 0、worker 无错误、stop 前 health ready=true；`failure_classification` 仅 1 次 semantic provider timeout
 
 状态说明：
 
@@ -39,7 +39,7 @@
 | ID | 标准 | 状态 | 当前证据与缺口 |
 | --- | --- | --- | --- |
 | EXEC-01 | 回答只使用 Workspace | 已满足 | 规则和真实模型均经 Workspace 入口 |
-| EXEC-02 | 无证据/低置信度不以确定语气表达 | 部分满足 | Review + claim 级字段已实现；真实模型长期校准仍待持续评测 |
+| EXEC-02 | 无证据/低置信度不以确定语气表达 | 部分满足 | Review + claim 级字段已实现；最终 60 分钟 20/20 对话成功、0 次 generate 失败；真实模型长期校准仍待持续评测 |
 | EXEC-03 | 计划包含依赖、预算、失败分支、取消点 | 已满足 | 计划/进度/校验测试通过 |
 | EXEC-04 | 工具动作经过权限、风险、幂等检查 | 已满足 | LLM 动作判断、治理、幂等测试通过 |
 | EXEC-05 | 高风险动作等待确认由 LLM 判断 | 部分满足 | 动作确认模型已接入；真实高风险工具有限 |
@@ -70,26 +70,26 @@
 
 | ID | 标准 | 状态 | 当前证据与缺口 |
 | --- | --- | --- | --- |
-| ACT-01 | 快慢回路异步，慢失败不阻塞快速交互 | 已满足 | 5/30 分钟真实运行快速路径始终返回；worker 未因 APITimeoutError 退出，backlog 最终为 0 |
+| ACT-01 | 快慢回路异步，慢失败不阻塞快速交互 | 已满足 | 5/30/60 分钟真实运行快速路径始终返回；最终 60 分钟 20/20 无 fast error，worker 未因 APITimeoutError 退出，backlog 最终为 0 |
 | ACT-02 | 无滚动历史仍保持身份、关系、目标连续性 | 已满足 | 无滚动上下文重启连续性测试通过 |
-| ACT-03 | 外部事件、目标、关系、情绪能形成动机 | 已满足 | boredom 在 5/30 分钟真实运行中形成 social_connection 动机并产生 Mailbox 消息 |
-| ACT-04 | 主动表达、提醒、询问、提议或沉默 | 已满足 | 主动表达真实验证通过，模型动态生成自然语言消息；长期主观体验仍待盲测 |
+| ACT-03 | 外部事件、目标、关系、情绪能形成动机 | 已满足 | boredom 在 5/30/60 分钟真实运行中形成 social_connection 动机；最终 60 分钟共 5 条动机和 5 条 Mailbox |
+| ACT-04 | 主动表达、提醒、询问、提议或沉默 | 已满足 | 主动表达真实验证通过，模型动态生成自然语言消息；最终 60 分钟产生 5 条主动 Mailbox；长期主观体验仍待盲测 |
 | ACT-05 | 情绪影响行为但不改事实/身份 | 已满足 | 情绪仅影响社交 review 阈值和主动动机；事实 grounding 不受影响 |
 | ACT-06 | 主动意图支持接纳、延迟、合并、取消、过期、重评 | 已满足 | 意图生命周期测试通过 |
-| ACT-07 | 正例及时、负例沉默、重复一致性 | 已满足 | 确定性正负例矩阵通过；60 分钟真实运行仅 2 条 `social_connection` Mailbox，间隔符合冷却，无等价重复 |
+| ACT-07 | 正例及时、负例沉默、重复一致性 | 已满足 | 确定性正负例矩阵通过；最终 60 分钟 5 条 `social_connection` Mailbox，冷却和幂等未产生等价重复 |
 
 ## 9.7 实时情绪系统
 
 | ID | 标准 | 状态 | 当前证据与缺口 |
 | --- | --- | --- | --- |
-| EMO-01 | 快速情绪反应 + 慢速重评估 | 已满足 | `fast_reaction` + LLM affect 已实现；60 分钟真实双回路中慢速评估、失败恢复、worker/backlog 保持稳定 |
+| EMO-01 | 快速情绪反应 + 慢速重评估 | 已满足 | `fast_reaction` + LLM affect 已实现；最终 60 分钟真实双回路中慢速评估、失败恢复、worker/backlog 保持稳定 |
 | EMO-02 | 情绪维度完整 | 已满足 | valence/arousal/control/certainty/intensity/object/cause/decay 已落地 |
 | EMO-03 | 情绪衰减与 MoodState 累积 | 已满足 | decay/accumulate/Workspace 读取衰减测试通过 |
 | EMO-04 | Workspace 注入当前情绪和心境 | 已满足 | `WorkspaceFixedContext.emotion` 已实现 |
 | EMO-05 | 情绪可调节社交 review，但不放宽事实 grounding | 已满足 | ReviewPolicy 单元测试覆盖边界 |
-| EMO-06 | boredom 形成 social_connection 动机与主动聊天 | 已满足 | 5/30 分钟真实运行均产生主动 Mailbox；动态 LLM 表达真实验证通过 |
+| EMO-06 | boredom 形成 social_connection 动机与主动聊天 | 已满足 | 5/30/60 分钟真实运行均产生主动 Mailbox；最终 60 分钟 5 条 social_connection；动态 LLM 表达真实验证通过 |
 | EMO-07 | 用户可以查看、纠正、导出、删除、关闭情绪系统 | 已满足 | CLI/HTTP/WebUI 查看；纠正、导出、删除、关闭/重新开启均有入口和测试；删除传播已覆盖 |
-| EMO-08 | 情绪行为可审计、可取消、可重放、幂等 | 部分满足 | 冷却和幂等测试已有；60 分钟真实运行无等价重复；跨重启长期回放仍待专项 |
+| EMO-08 | 情绪行为可审计、可取消、可重放、幂等 | 部分满足 | 冷却和幂等测试已有；最终 60 分钟 5 条主动意图/Mailbox 无等价重复；跨重启长期回放仍待专项 |
 
 ## 状态汇总
 
@@ -99,16 +99,27 @@
 | 部分满足 | 13 |
 | 未满足 | 0 |
 
-## 真实 60 分钟双回路结果（2026-09-16）
+## 真实双回路最终结果（2026-09-16）
+
+### 最终 60 分钟（`main = 02e1ed6`）
 
 - 场景：20 条用户消息，每 180 秒；boredom 消息在 0、5、35 分钟；
+- `dialogue.started=20`、`assistant.message=20`、`dialogue.failed=0`；
 - `fast_success=20/20`，无 fast error；
-- Mailbox：2 条，均为 `social_connection`，分别在第 1 个和第 35 分钟附近形成；
+- 主动：5 条 `social_connection` 动机、5 条 `ProactiveIntention`、5 条 Mailbox；
 - `max_backlog=1`，最终 `backlog=0`，`dead_letters=0`；
-- worker 无错误类型，clean lifecycle shutdown；
-- stop 前 health ready=true，models/modules/worker 均为 healthy；
-- 出现过 1 次 `APITimeoutError`，后续模型调用恢复 healthy；
-- 结论：主动冷却、幂等、慢回路失败隔离和真实模型健康恢复均得到短程长期证据。
+- worker 无错误类型；stop 前 health ready=true，最终 models/modules 为 healthy；
+- 降级：`module_degradation_counts={semantic.llm_extractor: 3}`，`model_unhealthy_counts={proactive: 1}`，触发原因均为 `APITimeoutError`；
+- `failure_classification`：1 次 `semantic.llm_extractor / provider_timeout_or_no_response`；
+- 结论：对话主链 20/20 未被模型波动打断；单次 semantic timeout 被隔离，未产生死信、backlog 或状态破坏。
+
+### 最终 30 分钟（`main = a7dabdb`）
+
+- 10/10 fast 无异常；`dialogue.started=10`、`assistant.message=9`、`dialogue.failed=1` 为 `GroundingRejected`；
+- `failure_classification total_failures=0`；`module_degradation_counts={}`；
+- `max_backlog=1`，最终 `backlog=0`，`dead_letters=0`；
+- 该 run 的唯一 `dialogue.failed` 是合理的 `GroundingRejected`：回答新增了未被证据支持的推断“听起来是平平稳稳的一天”；claim 级审查按要求拒绝，不作为系统故障。
+- 另一次 60 分钟预跑中定位到 input evidence 与低置信 workspace item 共享证据时的 grounding 误伤，已在 `02e1ed6` 修复并加单元测试；最终 60 分钟无 generate 失败且 `dialogue.failed=0`。
 
 ## 当前仍未收口的验证项
 
@@ -117,5 +128,5 @@
 - 真实进程强杀、长期 worker 取消、多进程 worker；
 - 向量/图谱索引和跨记忆/关系/叙事的完整来源图；
 - 真实高风险工具、动作确认和失败降级场景；
-- 真实模型长期校准、低置信度表达和未知/假设类型；
+- 真实模型长期校准、低置信度表达和未知/假设类型（最终 60 分钟仍有 1 次 semantic provider timeout）；
 - WebUI 中情绪/心境的纠正、导出、删除全流程可视化。
