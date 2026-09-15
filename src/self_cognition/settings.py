@@ -19,6 +19,7 @@ class ApplicationSettings:
     worker_enabled: bool = False
     worker_poll_interval_seconds: float = 0.1
     worker_max_workers: int = 4
+    worker_lease_timeout_seconds: float = 300.0
     cognition_max_output_tokens: int = 2048
     dialogue_max_output_tokens: int = 4096
     model_temperature: float = 0.0
@@ -33,6 +34,8 @@ class ApplicationSettings:
             raise ValueError("worker poll interval must be positive")
         if self.worker_max_workers < 1:
             raise ValueError("worker max workers must be positive")
+        if self.worker_lease_timeout_seconds <= 0:
+            raise ValueError("worker lease timeout must be positive")
         if self.cognition_max_output_tokens < 1:
             raise ValueError("cognition max output tokens must be positive")
         if self.dialogue_max_output_tokens < 1:
@@ -79,6 +82,9 @@ def load_settings(
             0.1,
         ),
         worker_max_workers=_integer(values, "SC_WORKER_MAX_WORKERS", 4),
+        worker_lease_timeout_seconds=_floating_point(
+            values, "SC_WORKER_LEASE_TIMEOUT_SECONDS", 300.0
+        ),
         cognition_max_output_tokens=_integer(
             values, "SC_COGNITION_MAX_OUTPUT_TOKENS", 2048
         ),

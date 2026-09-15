@@ -97,7 +97,7 @@ from self_cognition.infrastructure.persistence.in_memory_evidence_repository imp
     InMemoryEvidenceRepository,
 )
 from self_cognition.runtime.engine import CognitionEngine
-from self_cognition.runtime.event_bus import SingleMachineEventBus
+from self_cognition.runtime.event_bus import RetryPolicy, SingleMachineEventBus
 from self_cognition.runtime.recovery import RunRecoveryService
 from self_cognition.runtime.run_service import RunLifecycle
 from self_cognition.runtime.scheduler import DualLoopScheduler
@@ -429,6 +429,11 @@ def build_container(
         process_journal,
         process_event,
         max_workers=resolved_settings.worker_max_workers,
+        retry_policy=RetryPolicy(
+            lease_timeout=timedelta(
+                seconds=resolved_settings.worker_lease_timeout_seconds
+            )
+        ),
         metrics=metrics,
         after_success=after_success,
     )

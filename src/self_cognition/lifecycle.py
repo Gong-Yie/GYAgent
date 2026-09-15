@@ -104,11 +104,13 @@ class ApplicationLifecycle:
         self.stop()
 
     def _run_worker(self) -> None:
-        try:
-            while not self._stop_requested.is_set():
+        while not self._stop_requested.is_set():
+            try:
                 self._event_bus.drain()
-                self._stop_requested.wait(self._poll_interval)
-        except Exception as error:
-            self._worker_error_type = type(error).__name__
-            self._ready.clear()
-            self._stop_requested.set()
+            except Exception as error:
+                self._worker_error_type = type(error).__name__
+                self._stop_requested.wait(max(self._poll_interval, 1.0))
+                continue
+            if self._worker_error_type is not None:
+                self._worker_error_type = None
+            self._stop_requested.wait(self._poll_interval)
