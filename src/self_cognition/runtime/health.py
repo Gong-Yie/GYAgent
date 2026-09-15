@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 
@@ -9,6 +10,7 @@ class ComponentHealth:
     name: str
     status: str
     detail: str | None = None
+    details: tuple[dict[str, object], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,7 +27,12 @@ class HealthReport:
             "ready": self.ready,
             "degraded": self.degraded,
             "components": [
-                {"name": item.name, "status": item.status, "detail": item.detail}
+                {
+                    "name": item.name,
+                    "status": item.status,
+                    "detail": item.detail,
+                    "details": [dict(detail) for detail in item.details],
+                }
                 for item in self.components
             ],
         }
@@ -99,10 +106,25 @@ class HealthService:
         statuses = tuple(self._modules.statuses())
         degraded = [item for item in statuses if item.health.value == "degraded"]
         disabled = [item for item in statuses if item.health.value == "disabled"]
+        details = tuple(
+            {
+                "module_id": item.module_id,
+                "category": item.category,
+                "version": item.version,
+                "subscriptions": sorted(item.subscriptions),
+                "health": item.health.value,
+                "degraded_reason": item.degraded_reason,
+            }
+            for item in statuses
+        )
         return ComponentHealth(
             "modules",
             "degraded" if degraded else "healthy",
-            f"degraded={len(degraded)};disabled={len(disabled)}",
+            (
+                f"healthy={len(statuses) - len(degraded) - len(disabled)};"
+                f"degraded={len(degraded)};disabled={len(disabled)}"
+            ),
+            details,
         )
 
     def _tools(self) -> ComponentHealth:
@@ -113,13 +135,41 @@ class HealthService:
         )
 
     def _models_health(self) -> ComponentHealth:
+        statuses = tuple(self._model_router.statuses())
         unavailable = [
-            item
-            for item in self._model_router.statuses()
-            if not item.enabled or not item.healthy
+            item for item in statuses if not item.enabled or not item.healthy
         ]
+        recovering = [
+            item
+            for item in statuses
+            if item.enabled
+            and not item.healthy
+            and item.degraded_until is not None
+        ]
+        details = tuple(
+            {
+                "task": item.task,
+                "provider_id": item.provider_id,
+                "enabled": item.enabled,
+                "healthy": item.healthy,
+                "degraded_reason": item.degraded_reason,
+                "consecutive_failures": item.consecutive_failures,
+                "degraded_until": _isoformat(item.degraded_until),
+                "last_failure_at": _isoformat(item.last_failure_at),
+                "last_success_at": _isoformat(item.last_success_at),
+            }
+            for item in statuses
+        )
         return ComponentHealth(
             "models",
             "degraded" if unavailable else "healthy",
-            f"unavailable={len(unavailable)}",
+            (
+                f"total={len(statuses)};unavailable={len(unavailable)};"
+                f"recovering={len(recovering)}"
+            ),
+            details,
         )
+
+
+def _isoformat(value: datetime | None) -> str | None:
+    return None if value is None else value.isoformat()

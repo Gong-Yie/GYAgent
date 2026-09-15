@@ -114,6 +114,7 @@ from self_cognition.infrastructure.llm.router import (
     RoutedActionModel,
     RoutedDialogueModel,
     RoutedPlanningModel,
+    RoutedProactivityModel,
 )
 from self_cognition.infrastructure.llm.action_responses import (
     OpenAIResponsesActionModel,
@@ -346,12 +347,30 @@ def build_container(
         metrics=metrics,
         governance=governance,
     )
+    model_router = ModelRouter(
+        disabled_provider_loader=lambda subject: governance.load_controls(
+            subject
+        ).disabled_model_providers,
+        failure_cooldown=timedelta(
+            seconds=resolved_settings.model_failure_cooldown_seconds
+        ),
+        max_failure_cooldown=timedelta(
+            seconds=resolved_settings.model_max_failure_cooldown_seconds
+        ),
+        clock=SYSTEM_CLOCK,
+    )
+    selected_proactive_model: ProactivityModel | None = None
+    if proactive_model is not None:
+        model_router.register(
+            ModelRegistration("proactive", "proactive-default", proactive_model)
+        )
+        selected_proactive_model = RoutedProactivityModel(model_router)
     proactive = ProactiveIntentionService(
         event_store,
         evidence_repository,
         governance,
         metrics,
-        proactive_model,
+        selected_proactive_model,
     )
     wake_subjects: set[SubjectScope] = {
         event.subject
@@ -485,15 +504,14 @@ def build_container(
         capability_registry.register(tool_executor.registration)
     selected_planning_model = planning_model or RulePlanningModel()
     selected_action_model = action_model or RuleActionModel()
-    model_router = ModelRouter(
-        (
-            ModelRegistration("dialogue", "dialogue-default", dialogue_adapter),
-            ModelRegistration("planning", "planning-default", selected_planning_model),
-            ModelRegistration("action", "action-default", selected_action_model),
-        ),
-        disabled_provider_loader=lambda subject: governance.load_controls(
-            subject
-        ).disabled_model_providers,
+    model_router.register(
+        ModelRegistration("dialogue", "dialogue-default", dialogue_adapter)
+    )
+    model_router.register(
+        ModelRegistration("planning", "planning-default", selected_planning_model)
+    )
+    model_router.register(
+        ModelRegistration("action", "action-default", selected_action_model)
     )
     converse = ConverseService(
         process_event,

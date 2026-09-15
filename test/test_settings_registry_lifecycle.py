@@ -75,6 +75,8 @@ def test_dotenv_loads_defaults_and_process_environment_overrides(tmp_path: Path)
                 "SC_WORKER_ENABLED=true",
                 "SC_WORKER_POLL_INTERVAL_SECONDS=0.25",
                 "SC_WORKER_MAX_WORKERS=2",
+                "SC_MODEL_FAILURE_COOLDOWN_SECONDS=5",
+                "SC_MODEL_MAX_FAILURE_COOLDOWN_SECONDS=10",
                 "OPENAI_API_KEY=must-not-enter-settings",
                 "OPENAI_MODEL=shared-model",
                 "OPENAI_BASE_URL=https://models.example.test/v1",
@@ -93,6 +95,8 @@ def test_dotenv_loads_defaults_and_process_environment_overrides(tmp_path: Path)
     assert settings.worker_enabled is True
     assert settings.worker_poll_interval_seconds == 0.25
     assert settings.worker_max_workers == 2
+    assert settings.model_failure_cooldown_seconds == 5
+    assert settings.model_max_failure_cooldown_seconds == 10
     assert "must-not-enter-settings" not in repr(settings)
     assert not hasattr(settings, "openai_api_key")
     secret_source = DotenvSecretSource(
@@ -194,13 +198,19 @@ def test_build_container_uses_one_openai_model_for_all_default_agents(
         container.dialogue_model,
         container.planning_model,
         container.action_model,
-        container.proactive._model,
+        container.proactive._model.model,
         modules["semantic.llm_extractor"]._model,
         modules["metacognition.conflict_extractor"]._model,
         modules["affect.affect_extractor"]._model,
     )
 
     assert all(model._model == "shared-model" for model in configured_models)
+    assert {status.task for status in container.model_router.statuses()} == {
+        "dialogue",
+        "planning",
+        "action",
+        "proactive",
+    }
     for status in container.module_registry.statuses():
         assert status.version == modules[status.module_id].module_version
     assert calls == [

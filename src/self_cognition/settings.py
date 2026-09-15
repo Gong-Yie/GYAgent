@@ -23,6 +23,8 @@ class ApplicationSettings:
     cognition_max_output_tokens: int = 2048
     dialogue_max_output_tokens: int = 4096
     model_temperature: float = 0.0
+    model_failure_cooldown_seconds: float = 30.0
+    model_max_failure_cooldown_seconds: float = 900.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "data_dir", Path(self.data_dir))
@@ -42,6 +44,15 @@ class ApplicationSettings:
             raise ValueError("dialogue max output tokens must be positive")
         if not 0.0 <= self.model_temperature <= 2.0:
             raise ValueError("model temperature must be between 0 and 2")
+        if self.model_failure_cooldown_seconds <= 0:
+            raise ValueError("model failure cooldown must be positive")
+        if (
+            self.model_max_failure_cooldown_seconds
+            < self.model_failure_cooldown_seconds
+        ):
+            raise ValueError(
+                "model maximum failure cooldown must not be shorter than base"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +104,12 @@ def load_settings(
         ),
         model_temperature=_floating_point(
             values, "SC_MODEL_TEMPERATURE", 0.0
+        ),
+        model_failure_cooldown_seconds=_floating_point(
+            values, "SC_MODEL_FAILURE_COOLDOWN_SECONDS", 30.0
+        ),
+        model_max_failure_cooldown_seconds=_floating_point(
+            values, "SC_MODEL_MAX_FAILURE_COOLDOWN_SECONDS", 900.0
         ),
     )
 
