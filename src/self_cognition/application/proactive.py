@@ -607,7 +607,6 @@ class ProactiveIntentionService:
                 stored.payload.intention.motive.kind
             )
             == family
-            and stored.payload.intention.valid_until > as_of
             and stored.payload.intention.created_at
             > as_of - PROACTIVE_KIND_COOLDOWN
             for stored in self._read(mind)

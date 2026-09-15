@@ -351,7 +351,7 @@ class SocialProactivityModel:
             "邀请用户聊天",
             0.8,
             1,
-            600,
+            60,
             (str(event.event_id),),
         )
 
