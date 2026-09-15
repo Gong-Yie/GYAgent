@@ -4,6 +4,7 @@ from uuid import UUID
 
 import pytest
 
+from self_cognition.core.dialogue import DialogueModelOutput
 from self_cognition.infrastructure.llm.action_responses import (
     OpenAIResponsesActionModel,
 )
@@ -12,6 +13,11 @@ from self_cognition.infrastructure.llm.dialogue_responses import (
 )
 from self_cognition.infrastructure.llm.planning_responses import (
     OpenAIResponsesPlanningModel,
+)
+from self_cognition.infrastructure.llm.router import (
+    ModelRegistration,
+    ModelRouter,
+    RoutedDialogueModel,
 )
 from self_cognition.runtime.run_context import RunContext
 
@@ -121,3 +127,42 @@ def test_dialogue_empty_output_is_still_invalid():
     output = model._call({}, "instructions", {}, "dialogue_answer", make_context())
 
     assert output.error_type == "ModelOutputError"
+
+class EmptyThenValidRepairDialogue:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def repair(self, workspace, previous, error, context):
+        self.calls += 1
+        if self.calls == 1:
+            return DialogueModelOutput(
+                "test-model",
+                "resp-empty-repair",
+                "{}",
+                "ModelOutputError",
+            )
+        return DialogueModelOutput(
+            "test-model",
+            "resp-valid-repair",
+            '{"text":"ok"}',
+        )
+
+
+def test_routed_dialogue_repair_retries_once_on_invalid_provider_output():
+    stub = EmptyThenValidRepairDialogue()
+    router = ModelRouter(
+        (ModelRegistration("dialogue", "dialogue-test", stub),)
+    )
+    model = RoutedDialogueModel(router)
+
+    repaired = model.repair(
+        SimpleNamespace(subject=None),
+        "previous",
+        ValueError("invalid output"),
+        make_context(),
+    )
+
+    assert stub.calls == 2
+    assert repaired is not None
+    assert repaired.error_type is None
+    assert repaired.response_id == "resp-valid-repair"

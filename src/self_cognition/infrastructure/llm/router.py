@@ -242,6 +242,16 @@ class RoutedDialogueModel:
         repair = getattr(registration.model, "repair_review", None)
         if repair is None:
             return None
+        result = _call_registration(
+            self._router,
+            registration,
+            lambda: repair(workspace, draft, previous, error, context),
+            attempts=1,
+        )
+        if getattr(result, "error_type", None) is None:
+            return result
+        # A provider may return an empty/incomplete repair response. Retry the
+        # bounded repair once; deterministic validation still decides validity.
         return _call_registration(
             self._router,
             registration,
@@ -254,6 +264,16 @@ class RoutedDialogueModel:
         repair = getattr(registration.model, "repair", None)
         if repair is None:
             return None
+        result = _call_registration(
+            self._router,
+            registration,
+            lambda: repair(workspace, previous, error, context),
+            attempts=1,
+        )
+        if getattr(result, "error_type", None) is None:
+            return result
+        # A provider may return an empty/incomplete repair response. Retry the
+        # bounded repair once; deterministic validation still decides validity.
         return _call_registration(
             self._router,
             registration,
