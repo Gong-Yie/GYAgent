@@ -18,6 +18,7 @@ from self_cognition.application.forget import ForgetService
 from self_cognition.blackboard.reducer import StateReducer
 from self_cognition.blackboard.service import CognitiveSpaceService
 from self_cognition.cognition.affect.affect_extractor import AffectExtractor
+from self_cognition.cognition.affect.fast_reaction import FastAffectExtractor
 from self_cognition.cognition.registry import (
     CognitiveModuleRegistry,
     ModuleRegistration,
@@ -673,6 +674,12 @@ def _default_module_registrations(
             "identity",
             "1",
             SelfModelCognitionModule(),
+        ),
+        ModuleRegistration(
+            "affect.fast_reaction",
+            "affect",
+            "1",
+            FastAffectExtractor(),
         ),
         ModuleRegistration(
             "affect.affect_extractor",

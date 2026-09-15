@@ -8,7 +8,7 @@ from enum import Enum
 from typing import Protocol, runtime_checkable
 from uuid import UUID
 
-from self_cognition.core.affect import decay_assessment
+from self_cognition.core.affect import MoodState, decay_assessment, decay_mood
 from self_cognition.core.errors import ContractValidationError
 from self_cognition.core.evidence import EvidenceRef
 from self_cognition.core.indexes import WorkspaceIndex, text_terms
@@ -717,6 +717,13 @@ def state_content(
         return None
     if field_name.startswith("affect.current."):
         return decay_assessment(atom.value, as_of)
+    if field_name.startswith("mood."):
+        try:
+            mood = MoodState.from_state_value(atom.value)
+        except ContractValidationError:
+            return None
+        decayed = decay_mood(mood, as_of)
+        return None if decayed is None else decayed.to_state_value()
     return atom.value
 
 
