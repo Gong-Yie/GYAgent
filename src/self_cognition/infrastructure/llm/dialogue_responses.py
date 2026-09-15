@@ -86,8 +86,14 @@ REVIEW_INSTRUCTIONS = DIALOGUE_REVIEW.system_instructions + "\n" + (
     "unknowns, and appropriately uncertain wording. A valid evidence ID alone is "
     "not semantic support. Do not treat assistant assertions as proof or model "
     "self-reports as capabilities. Reject unsupported assertions or misleading "
-    "certainty. Do not re-decide disclosure values, privacy choices or safety "
-    "tradeoffs; this review checks evidence and expression only. Do not rewrite "
+    "certainty. The input_evidence is authoritative for the user's current "
+    "message. Social or pragmatic answers that only greet, acknowledge, offer "
+    "to chat, ask a follow-up, or restate the user's message are supported by "
+    "input_evidence and must not be rejected merely for lacking an additional "
+    "workspace item. Reject only unsupported external facts, agent memories or "
+    "capabilities, or user facts not present in the workspace. Do not re-decide "
+    "disclosure values, privacy choices or safety tradeoffs; this review checks "
+    "evidence and expression only. Do not rewrite the answer. Return supported "
     "the answer. Return supported and a reason."
 )
 
