@@ -38,6 +38,8 @@ from self_cognition.core.scopes import (
 )
 from self_cognition.core.workspace import (
     RetrievalBudget,
+    RetrievalSource,
+    WorkspaceItem,
     WorkspacePacket,
     estimate_tokens,
     workspace_model_context,
@@ -625,3 +627,41 @@ def test_context_changes_stop_publication_before_review(
         assert "injected-summary" not in repr(
             container.state_repository.load(subject())
         )
+
+def test_input_restatement_is_not_invalidated_by_low_confidence_item_sharing_input_evidence():
+    request = message("今天过得还行")
+    input_ref = EvidenceRef.for_event(request)
+    item = WorkspaceItem(
+        target_field="metacognition.assessments.user_goal",
+        content={"status": "unknown"},
+        evidence_refs=(input_ref,),
+        confidence=0.5,
+        selection_reason="low-confidence inference",
+        source=RetrievalSource.STATE,
+    )
+    packet = WorkspacePacket(
+        subject_id="alice",
+        state_version=0,
+        items=(item,),
+        subject=subject("alice"),
+        input_evidence=input_ref,
+    )
+    text = "今天过得还行。"
+    draft = DialogueDraft(
+        text,
+        (
+            DialogueClaim(
+                text,
+                (input_ref.evidence_id,),
+                ClaimStance.SUPPORTED,
+            ),
+        ),
+        DisclosureDecision(
+            "withhold",
+            DisclosureScope.PRIVATE,
+            "no disclosure needed",
+            (),
+        ),
+    )
+
+    assert validate_grounding(draft, packet) == (input_ref,)

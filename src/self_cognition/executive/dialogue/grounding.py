@@ -10,6 +10,11 @@ def validate_grounding(
     available = {ref.evidence_id: ref for ref in workspace.evidence_refs}
     if workspace.input_evidence is not None:
         available[workspace.input_evidence.evidence_id] = workspace.input_evidence
+    input_evidence_id = (
+        workspace.input_evidence.evidence_id
+        if workspace.input_evidence is not None
+        else None
+    )
     cited = set(draft.disclosure.evidence_ids)
     for claim in draft.claims:
         if claim.text not in draft.text:
@@ -28,7 +33,9 @@ def validate_grounding(
             if any(
                 (item.confidence < 1.0 or item.source is RetrievalSource.CONFLICT)
                 and any(
-                    ref.evidence_id in claim.evidence_ids for ref in item.evidence_refs
+                    ref.evidence_id in claim.evidence_ids
+                    and ref.evidence_id != input_evidence_id
+                    for ref in item.evidence_refs
                 )
                 for item in workspace.items
             ):
