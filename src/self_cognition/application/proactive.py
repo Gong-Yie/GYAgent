@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from threading import RLock
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from self_cognition.core.affect import Motive, compete_motives
@@ -33,6 +34,10 @@ from self_cognition.runtime.run_context import RunContext
 from self_cognition.observability.metrics import MetricsRegistry
 
 
+SOCIAL_CONNECTION_KIND = "social_connection"
+SOCIAL_CONNECTION_COOLDOWN = timedelta(minutes=30)
+
+
 @dataclass(frozen=True, slots=True)
 class ProactiveDecisionResult:
     intention: ProactiveIntention
@@ -57,6 +62,7 @@ class ProactiveIntentionService:
         self._governance = governance
         self._metrics = metrics
         self._model = model
+        self._social_lock = RLock()
 
     def form_motive(
         self,
@@ -97,6 +103,7 @@ class ProactiveIntentionService:
         if not set(proposal.evidence_ids).issubset(available):
             raise ContractValidationError("proactive motive cites unavailable evidence")
         now = context.clock.now()
+        mind = SubjectScope.for_mind(event.subject.mind.mind_id)
         evidence = tuple(
             ref
             for ref in (EvidenceRef.for_event(event), *workspace.evidence_refs)
@@ -129,9 +136,14 @@ class ProactiveIntentionService:
         if any(
             isinstance(stored.payload, ProactiveIntentionPayload)
             and stored.payload.intention.idempotency_key == intention.idempotency_key
-            for stored in self._read(SubjectScope.for_mind(event.subject.mind.mind_id))
+            for stored in self._read(mind)
         ):
             return None
+        if self._is_social_kind(proposal.kind):
+            with self._social_lock:
+                if self._recent_social_intention(mind, now):
+                    return None
+                return self.propose(intention, context=context)
         return self.propose(intention, context=context)
 
     def propose(
@@ -361,40 +373,33 @@ class ProactiveIntentionService:
             return None
         now = context.clock.now() if context is not None else event.recorded_at
         mind = SubjectScope.for_mind(event.subject.mind.mind_id)
-        recent = any(
-            isinstance(stored.payload, ProactiveIntentionPayload)
-            and stored.payload.intention.motive.kind == "social_connection"
-            and stored.payload.intention.valid_until > now
-            and stored.payload.intention.created_at
-            > now - timedelta(minutes=30)
-            for stored in self._read(mind)
-        )
-        if recent:
-            return None
-        motive = Motive(
-            uuid4(),
-            event.subject.mind.mind_id,
-            "social_connection",
-            "boredom and unmet social interaction need",
-            0.8,
-            1,
-            now,
-            (event.event_id,),
-            expires_at=now + timedelta(hours=1),
-        )
-        intention = ProactiveIntention(
-            uuid4(),
-            motive,
-            event.subject,
-            "主动问候并邀请用户聊天",
-            1,
-            0,
-            (EvidenceRef.for_event(event),),
-            now,
-            now + timedelta(minutes=10),
-            idempotency_key=f"affect-social:{event.event_id}",
-        )
-        return self.propose(intention, context=context)
+        with self._social_lock:
+            if self._recent_social_intention(mind, now):
+                return None
+            motive = Motive(
+                uuid4(),
+                event.subject.mind.mind_id,
+                SOCIAL_CONNECTION_KIND,
+                "boredom and unmet social interaction need",
+                0.8,
+                1,
+                now,
+                (event.event_id,),
+                expires_at=now + timedelta(hours=1),
+            )
+            intention = ProactiveIntention(
+                uuid4(),
+                motive,
+                event.subject,
+                "主动问候并邀请用户聊天",
+                1,
+                0,
+                (EvidenceRef.for_event(event),),
+                now,
+                now + timedelta(minutes=10),
+                idempotency_key=f"affect-social:{event.event_id}",
+            )
+            return self.propose(intention, context=context)
 
     @staticmethod
     def _boredom_detected(workspace: WorkspacePacket) -> bool:
@@ -586,6 +591,27 @@ class ProactiveIntentionService:
         context: RunContext | None = None,
     ) -> ProactiveDecisionResult:
         return self.decide(subject, intention_id, action, reason, context=context)
+
+    def _recent_social_intention(
+        self,
+        mind: SubjectScope,
+        as_of: datetime,
+    ) -> bool:
+        return any(
+            isinstance(stored.payload, ProactiveIntentionPayload)
+            and self._is_social_kind(
+                stored.payload.intention.motive.kind
+            )
+            and stored.payload.intention.valid_until > as_of
+            and stored.payload.intention.created_at
+            > as_of - SOCIAL_CONNECTION_COOLDOWN
+            for stored in self._read(mind)
+        )
+
+    @staticmethod
+    def _is_social_kind(kind: str) -> bool:
+        normalized = kind.strip().lower()
+        return "social" in normalized or "connection" in normalized
 
     def _find_intention(self, subject: SubjectScope, intention_id: UUID) -> ProactiveIntention:
         for event in self._read(subject):

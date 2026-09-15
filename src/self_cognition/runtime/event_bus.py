@@ -1,3 +1,4 @@
+import logging
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -22,6 +23,9 @@ from self_cognition.core.scopes import SubjectScope
 from self_cognition.core.time import Clock, SYSTEM_CLOCK
 from self_cognition.runtime.run_context import RunContext
 from self_cognition.observability.metrics import MetricsRegistry
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,7 +184,16 @@ class SingleMachineEventBus:
     ) -> None:
         if result.status is ProcessEventStatus.SUCCEEDED:
             if self._after_success is not None:
-                self._after_success(event, context)
+                try:
+                    self._after_success(event, context)
+                except Exception as error:
+                    if self._metrics is not None:
+                        self._metrics.increment("after_success.failures")
+                    logger.warning(
+                        "after_success callback failed event_id=%s error_type=%s",
+                        event.event_id,
+                        type(error).__name__,
+                    )
             return
         if result.status is ProcessEventStatus.CANCELLED:
             self._process_event.finalize_cancellation(event, context)

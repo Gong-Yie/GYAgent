@@ -92,7 +92,13 @@ class ConcurrencyProbeModule:
         return ()
 
 
-def make_bus(tmp_path: Path, module: object, clock: MutableClock) -> tuple[
+def make_bus(
+    tmp_path: Path,
+    module: object,
+    clock: MutableClock,
+    *,
+    after_success=None,
+) -> tuple[
     SingleMachineEventBus, FileProcessJournal
 ]:
     event_store = FileEventStore(tmp_path / "events.jsonl")
@@ -114,6 +120,7 @@ def make_bus(tmp_path: Path, module: object, clock: MutableClock) -> tuple[
                 lease_timeout=timedelta(seconds=30),
                 backoffs=(timedelta(seconds=1), timedelta(seconds=2)),
             ),
+            after_success=after_success,
         ),
         journal,
     )
@@ -251,3 +258,35 @@ def test_stale_processing_lease_can_be_reclaimed(tmp_path: Path) -> None:
     ).reconcile()
     results = restarted_bus.drain(clock)
     assert results[0].status is ProcessEventStatus.SUCCEEDED
+
+
+def test_after_success_failure_is_isolated(tmp_path: Path) -> None:
+    clock = MutableClock()
+    calls: list[UUID] = []
+
+    def failing_after_success(event: EventEnvelope, context: RunContext) -> None:
+        del context
+        calls.append(event.event_id)
+        raise RuntimeError("post-processing failed")
+
+    bus, journal = make_bus(
+        tmp_path,
+        FlakyModule(0),
+        clock,
+        after_success=failing_after_success,
+    )
+    event = EventEnvelope.user_message("user-1", "test", clock=clock)
+    context = RunContext(
+        UUID(int=1),
+        UUID(int=2),
+        clock.now() + timedelta(minutes=1),
+        clock=clock,
+    )
+    bus.publish(event, context)
+
+    result = bus.drain(clock)[0]
+
+    assert result.status is ProcessEventStatus.SUCCEEDED
+    assert calls == [event.event_id]
+    assert journal.get(event.event_id).status is ProcessingStatus.COMPLETED
+    assert bus.backlog() == ()

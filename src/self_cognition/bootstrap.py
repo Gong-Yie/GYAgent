@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass, replace
 from datetime import timedelta
 from pathlib import Path
@@ -166,6 +167,10 @@ from self_cognition.tools.executor import (
     WorkspaceShellExecutor,
     WorkspaceWebSearchExecutor,
 )
+
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -393,42 +398,52 @@ def build_container(
     def wake_due_intentions() -> None:
         now = SYSTEM_CLOCK.now()
         for subject in tuple(wake_subjects):
-            context = RunContext(
-                new_run_id(),
-                new_correlation_id(),
-                now + timedelta(seconds=30),
-            )
-            state = state_repository.load(subject) or SubjectState.empty(
-                subject.subject.subject_id,
-                mind_id=subject.mind.mind_id,
-                subject_kind=subject.subject.kind,
-            )
-            workspace = workspace_builder.build(
-                f"时间唤醒：{now.isoformat()}", state
-            )
-            proactive.consume_due(
-                subject,
-                as_of=now,
-                context=context,
-                workspace=workspace,
-            )
-            active = proactive.active(subject, as_of=now)
-            if not active:
+            try:
+                context = RunContext(
+                    new_run_id(),
+                    new_correlation_id(),
+                    now + timedelta(seconds=30),
+                )
+                state = state_repository.load(subject) or SubjectState.empty(
+                    subject.subject.subject_id,
+                    mind_id=subject.mind.mind_id,
+                    subject_kind=subject.subject.kind,
+                )
+                workspace = workspace_builder.build(
+                    f"时间唤醒：{now.isoformat()}", state
+                )
+                proactive.consume_due(
+                    subject,
+                    as_of=now,
+                    context=context,
+                    workspace=workspace,
+                )
+                active = proactive.active(subject, as_of=now)
+                if not active:
+                    continue
+                previous = last_reassessment.get(subject)
+                if previous is not None and now - previous < timedelta(minutes=1):
+                    continue
+                event = EventEnvelope.proactivity_reassessment(
+                    subject,
+                    "time.tick",
+                    previous_assessment_at=previous,
+                    clock=context.clock,
+                    correlation_id=context.correlation_id,
+                    run_id=context.run_id,
+                )
+                event_store.append(event)
+                last_reassessment[subject] = event.recorded_at
+                proactive.evaluate(event, workspace, context)
+            except Exception as error:
+                if metrics is not None:
+                    metrics.increment("proactive.scheduler.failures")
+                logger.warning(
+                    "scheduler proactive task failed subject_id=%s error_type=%s",
+                    subject.subject.subject_id,
+                    type(error).__name__,
+                )
                 continue
-            previous = last_reassessment.get(subject)
-            if previous is not None and now - previous < timedelta(minutes=1):
-                continue
-            event = EventEnvelope.proactivity_reassessment(
-                subject,
-                "time.tick",
-                previous_assessment_at=previous,
-                clock=context.clock,
-                correlation_id=context.correlation_id,
-                run_id=context.run_id,
-            )
-            event_store.append(event)
-            last_reassessment[subject] = event.recorded_at
-            proactive.evaluate(event, workspace, context)
 
     scheduler = DualLoopScheduler(
         lambda event, context: converse.converse(DialogueRequest(event), context),
@@ -443,21 +458,53 @@ def build_container(
     )
     def after_success(event: EventEnvelope, context: RunContext) -> None:
         wake_subjects.add(event.subject)
-        observed = proactive.observe_event(event, context=context)
-        state = state_repository.load(event.subject)
-        if state is None:
-            state = SubjectState.empty(
-                event.subject.subject.subject_id,
-                mind_id=event.subject.mind.mind_id,
-                subject_kind=event.subject.subject.kind,
-            )
-        if observed is None and getattr(event.payload, "text", None):
-            workspace = workspace_builder.build(event.payload.text, state)
-            proactive.evaluate(event, workspace, context)
-            proactive.form_boredom_social_motive(
-                event,
-                workspace,
-                context,
+        observed = None
+        try:
+            observed = proactive.observe_event(event, context=context)
+            state = state_repository.load(event.subject)
+            if state is None:
+                state = SubjectState.empty(
+                    event.subject.subject.subject_id,
+                    mind_id=event.subject.mind.mind_id,
+                    subject_kind=event.subject.subject.kind,
+                )
+            if observed is None and getattr(event.payload, "text", None):
+                workspace = workspace_builder.build(event.payload.text, state)
+                try:
+                    proactive.evaluate(event, workspace, context)
+                except Exception as error:
+                    if metrics is not None:
+                        metrics.increment(
+                            "proactive.after_success.model_failures"
+                        )
+                    logger.warning(
+                        "proactive evaluation failed event_id=%s error_type=%s",
+                        event.event_id,
+                        type(error).__name__,
+                    )
+                try:
+                    proactive.form_boredom_social_motive(
+                        event,
+                        workspace,
+                        context,
+                    )
+                except Exception as error:
+                    if metrics is not None:
+                        metrics.increment(
+                            "proactive.after_success.deterministic_failures"
+                        )
+                    logger.warning(
+                        "proactive motive formation failed event_id=%s error_type=%s",
+                        event.event_id,
+                        type(error).__name__,
+                    )
+        except Exception as error:
+            if metrics is not None:
+                metrics.increment("proactive.after_success.failures")
+            logger.warning(
+                "proactive after_success setup failed event_id=%s error_type=%s",
+                event.event_id,
+                type(error).__name__,
             )
         if event.event_type == "user.message":
             converse.converse(DialogueRequest(event), context)

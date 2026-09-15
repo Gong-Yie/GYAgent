@@ -4,6 +4,7 @@ from uuid import uuid4
 import pytest
 
 from self_cognition.application.proactive import ProactiveIntentionService
+from self_cognition.bootstrap import build_container
 from self_cognition.core.affect import (
     EmotionState,
     MoodState,
@@ -11,11 +12,14 @@ from self_cognition.core.affect import (
     decay_mood,
 )
 from self_cognition.core.dialogue import GroundingReview
+from self_cognition.core.errors import ContractValidationError
 from self_cognition.core.events import EventEnvelope
 from self_cognition.core.governance import UserControls
+from self_cognition.core.proactivity import MotiveProposal
 from self_cognition.core.scopes import SubjectScope
 from self_cognition.core.workspace import WorkspaceFixedContext, WorkspacePacket
 from self_cognition.executive.dialogue.review_policy import ReviewPolicy
+from self_cognition.executive.dialogue.rule_based import RuleBasedDialogueModel
 from self_cognition.infrastructure.llm.router import (
     ModelRegistration,
     ModelRouter,
@@ -291,3 +295,88 @@ def test_long_term_proactive_provider_cooldown_is_silent():
         )
         is None
     )
+
+
+class FailingProactiveModel:
+    def propose(self, event, workspace, context):
+        del event, workspace, context
+        raise ContractValidationError("invalid proactive evidence")
+
+    def express(self, intention, workspace, context):
+        del intention, workspace, context
+        return "unused"
+
+
+def test_after_success_proactive_failure_does_not_skip_dialogue(tmp_path):
+    app = build_container(
+        tmp_path / "data",
+        dotenv_path=tmp_path / "missing.env",
+        dialogue_model=RuleBasedDialogueModel(),
+        proactive_model=FailingProactiveModel(),
+    )
+    event = EventEnvelope.user_message("resilient-user", "你好")
+    context = RunContext(
+        uuid4(),
+        uuid4(),
+        datetime.now(timezone.utc) + timedelta(minutes=1),
+    )
+    try:
+        app.event_bus.publish(event, context)
+        results = app.event_bus.drain()
+
+        events = app.event_store.read_by_mind(event.subject.mind)
+        active_health = app.health.check().as_dict()
+    finally:
+        app.lifecycle.stop()
+
+    assert results[0].status.value == "succeeded"
+    assert any(item.event_type == "assistant.message" for item in events)
+    assert active_health["ready"] is False
+    proactive_status = next(
+        item
+        for item in app.model_router.statuses()
+        if item.task == "proactive"
+    )
+    assert proactive_status.healthy is False
+    assert proactive_status.degraded_reason == "ContractValidationError"
+
+
+class SocialProactivityModel:
+    def propose(self, event, workspace, context):
+        del workspace, context
+        return MotiveProposal(
+            True,
+            "social_engagement",
+            "长期社交需要",
+            "邀请用户聊天",
+            0.8,
+            1,
+            600,
+            (str(event.event_id),),
+        )
+
+    def express(self, intention, workspace, context):
+        del intention, workspace, context
+        return "聊聊天？"
+
+
+def test_long_term_model_social_proposals_respect_cooldown():
+    clock = FixedClock(T0)
+    store = InMemoryEventStore()
+    service = ProactiveIntentionService(store, model=SocialProactivityModel())
+    user = "model-social-user"
+    subject = SubjectScope.legacy_user(user)
+    workspace = _workspace(user, bored=False)
+
+    first = EventEnvelope.user_message(user, "今天有点空", clock=clock)
+    assert service.evaluate(first, workspace, _context(clock)) is not None
+
+    clock.advance(timedelta(minutes=5))
+    second = EventEnvelope.user_message(user, "今天有点空", clock=clock)
+    assert service.evaluate(second, workspace, _context(clock)) is None
+
+    clock.advance(timedelta(minutes=30))
+    third = EventEnvelope.user_message(user, "今天有点空", clock=clock)
+    assert service.evaluate(third, workspace, _context(clock)) is not None
+
+    assert len(service.active(subject, as_of=clock.now())) == 1
