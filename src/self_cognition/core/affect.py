@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from math import isfinite
 from typing import Any
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from self_cognition.core.errors import ContractValidationError
 
@@ -25,19 +25,32 @@ class AffectAssessment:
     assessed_at: datetime
     half_life_seconds: float = 3600.0
     active_threshold: float = ACTIVE_INTENSITY_THRESHOLD
+    arousal: float = 0.5
+    control: float = 0.5
+    certainty: float = 0.5
+    cause: str = ""
 
     def __post_init__(self) -> None:
         for name in ("target", "emotion", "scope"):
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
                 raise ContractValidationError(f"affect {name} must not be blank")
+        if not isinstance(self.cause, str):
+            raise ContractValidationError("affect cause must be text")
         if self.valence not in {"positive", "negative", "neutral", "mixed"}:
             raise ContractValidationError("affect valence is invalid")
         if not isinstance(self.goal_ids, tuple) or any(
             not isinstance(item, str) or not item.strip() for item in self.goal_ids
         ):
             raise ContractValidationError("affect goal IDs must be text values")
-        for name in ("initial_intensity", "half_life_seconds", "active_threshold"):
+        for name in (
+            "initial_intensity",
+            "half_life_seconds",
+            "active_threshold",
+            "arousal",
+            "control",
+            "certainty",
+        ):
             value = getattr(self, name)
             if (
                 isinstance(value, bool)
@@ -45,17 +58,16 @@ class AffectAssessment:
                 or not isfinite(value)
             ):
                 raise ContractValidationError(f"affect {name} must be a finite number")
-        if not 0 <= self.initial_intensity <= 1 or not 0 < self.active_threshold <= 1:
-            raise ContractValidationError(
-                "affect intensity or threshold is out of range"
-            )
+        if not 0 <= self.initial_intensity <= 1:
+            raise ContractValidationError("affect intensity is out of range")
+        if not 0 < self.active_threshold <= 1:
+            raise ContractValidationError("affect threshold is out of range")
         if self.half_life_seconds <= 0:
             raise ContractValidationError("affect half life must be positive")
-        if (
-            not isinstance(self.assessed_at, datetime)
-            or self.assessed_at.utcoffset() is None
-        ):
-            raise ContractValidationError("affect timestamp must include a timezone")
+        for name in ("arousal", "control", "certainty"):
+            if not 0 <= getattr(self, name) <= 1:
+                raise ContractValidationError(f"affect {name} is out of range")
+        _aware(self.assessed_at, "affect assessed_at")
 
     def to_state_value(self) -> dict[str, object]:
         return {
@@ -68,11 +80,15 @@ class AffectAssessment:
             "assessed_at": self.assessed_at.isoformat(),
             "half_life_seconds": self.half_life_seconds,
             "active_threshold": self.active_threshold,
+            "arousal": self.arousal,
+            "control": self.control,
+            "certainty": self.certainty,
+            "cause": self.cause,
         }
 
     @classmethod
     def from_state_value(cls, value: object) -> "AffectAssessment":
-        fields = {
+        required = {
             "target",
             "goal_ids",
             "emotion",
@@ -83,7 +99,7 @@ class AffectAssessment:
             "half_life_seconds",
             "active_threshold",
         }
-        if not isinstance(value, dict) or set(value) != fields:
+        if not isinstance(value, dict) or not required <= set(value):
             raise ContractValidationError("affect assessment fields are invalid")
         if not isinstance(value["goal_ids"], list):
             raise ContractValidationError("affect goal IDs must be an array")
@@ -98,6 +114,10 @@ class AffectAssessment:
                 assessed_at=datetime.fromisoformat(value["assessed_at"]),
                 half_life_seconds=value["half_life_seconds"],
                 active_threshold=value["active_threshold"],
+                arousal=value.get("arousal", 0.5),
+                control=value.get("control", 0.5),
+                certainty=value.get("certainty", 0.5),
+                cause=value.get("cause", ""),
             )
         except (TypeError, ValueError) as error:
             raise ContractValidationError("invalid affect assessment") from error
@@ -117,6 +137,10 @@ class EmotionState:
     goal_ids: tuple[str, ...] = ()
     half_life_seconds: float = 3600.0
     active_threshold: float = ACTIVE_INTENSITY_THRESHOLD
+    arousal: float = 0.5
+    control: float = 0.5
+    certainty: float = 0.5
+    cause: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.emotion_id, UUID):
@@ -125,13 +149,26 @@ class EmotionState:
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
                 raise ContractValidationError(f"emotion {name} must not be blank")
+        if not isinstance(self.cause, str):
+            raise ContractValidationError("emotion cause must be text")
         if self.valence not in {"positive", "negative", "neutral", "mixed"}:
             raise ContractValidationError("emotion valence is invalid")
         if any(not isinstance(item, str) or not item.strip() for item in self.goal_ids):
             raise ContractValidationError("emotion goal IDs must be text values")
-        for name in ("intensity", "half_life_seconds", "active_threshold"):
+        for name in (
+            "intensity",
+            "half_life_seconds",
+            "active_threshold",
+            "arousal",
+            "control",
+            "certainty",
+        ):
             value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+            ):
                 raise ContractValidationError(f"emotion {name} must be finite")
         if not 0.0 <= self.intensity <= 1.0:
             raise ContractValidationError("emotion intensity must be between 0 and 1")
@@ -139,6 +176,9 @@ class EmotionState:
             raise ContractValidationError("emotion half life must be positive")
         if not 0.0 < self.active_threshold <= 1.0:
             raise ContractValidationError("emotion threshold must be between 0 and 1")
+        for name in ("arousal", "control", "certainty"):
+            if not 0.0 <= getattr(self, name) <= 1.0:
+                raise ContractValidationError(f"emotion {name} must be between 0 and 1")
         _aware(self.assessed_at, "emotion assessed_at")
 
     @property
@@ -157,6 +197,10 @@ class EmotionState:
             "goal_ids": list(self.goal_ids),
             "half_life_seconds": self.half_life_seconds,
             "active_threshold": self.active_threshold,
+            "arousal": self.arousal,
+            "control": self.control,
+            "certainty": self.certainty,
+            "cause": self.cause,
         }
 
     @classmethod
@@ -174,7 +218,13 @@ class EmotionState:
                 assessed_at=datetime.fromisoformat(value["assessed_at"]),
                 goal_ids=tuple(value.get("goal_ids", ())),
                 half_life_seconds=value.get("half_life_seconds", 3600.0),
-                active_threshold=value.get("active_threshold", ACTIVE_INTENSITY_THRESHOLD),
+                active_threshold=value.get(
+                    "active_threshold", ACTIVE_INTENSITY_THRESHOLD
+                ),
+                arousal=value.get("arousal", 0.5),
+                control=value.get("control", 0.5),
+                certainty=value.get("certainty", 0.5),
+                cause=value.get("cause", ""),
             )
         except (KeyError, TypeError, ValueError) as error:
             raise ContractValidationError("invalid emotion state") from error
@@ -192,16 +242,195 @@ def decay_emotion(state: EmotionState, as_of: datetime) -> EmotionState | None:
     if intensity < state.active_threshold:
         return None
     return EmotionState(
-        state.emotion_id,
-        state.target,
-        state.emotion,
-        state.valence,
-        state.scope,
-        intensity,
-        state.assessed_at,
-        state.goal_ids,
-        state.half_life_seconds,
-        state.active_threshold,
+        emotion_id=state.emotion_id,
+        target=state.target,
+        emotion=state.emotion,
+        valence=state.valence,
+        scope=state.scope,
+        intensity=intensity,
+        assessed_at=state.assessed_at,
+        goal_ids=state.goal_ids,
+        half_life_seconds=state.half_life_seconds,
+        active_threshold=state.active_threshold,
+        arousal=state.arousal,
+        control=state.control,
+        certainty=state.certainty,
+        cause=state.cause,
+    )
+
+
+MOOD_FIELD = "mood.current"
+
+
+@dataclass(frozen=True, slots=True)
+class MoodState:
+    """A slower computational mood projection accumulated from emotions."""
+
+    mood_id: UUID
+    target: str
+    valence: str
+    scope: str
+    intensity: float
+    updated_at: datetime
+    arousal: float = 0.5
+    control: float = 0.5
+    certainty: float = 0.5
+    half_life_seconds: float = 86400.0
+    active_threshold: float = 0.05
+    source_emotion_ids: tuple[UUID, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.mood_id, UUID):
+            raise ContractValidationError("mood ID must be a UUID")
+        for name in ("target", "scope"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ContractValidationError(f"mood {name} must not be blank")
+        if self.valence not in {"positive", "negative", "neutral", "mixed"}:
+            raise ContractValidationError("mood valence is invalid")
+        if any(
+            not isinstance(item, UUID) for item in self.source_emotion_ids
+        ):
+            raise ContractValidationError("mood source emotion IDs must be UUIDs")
+        for name in (
+            "intensity",
+            "arousal",
+            "control",
+            "certainty",
+            "half_life_seconds",
+            "active_threshold",
+        ):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+            ):
+                raise ContractValidationError(f"mood {name} must be finite")
+        if not 0.0 <= self.intensity <= 1.0:
+            raise ContractValidationError("mood intensity must be between 0 and 1")
+        for name in ("arousal", "control", "certainty"):
+            if not 0.0 <= getattr(self, name) <= 1.0:
+                raise ContractValidationError(f"mood {name} must be between 0 and 1")
+        if self.half_life_seconds <= 0.0:
+            raise ContractValidationError("mood half life must be positive")
+        if not 0.0 < self.active_threshold <= 1.0:
+            raise ContractValidationError("mood threshold must be between 0 and 1")
+        _aware(self.updated_at, "mood updated_at")
+
+    def to_state_value(self) -> dict[str, object]:
+        return {
+            "mood_id": str(self.mood_id),
+            "target": self.target,
+            "valence": self.valence,
+            "scope": self.scope,
+            "intensity": self.intensity,
+            "updated_at": self.updated_at.isoformat(),
+            "arousal": self.arousal,
+            "control": self.control,
+            "certainty": self.certainty,
+            "half_life_seconds": self.half_life_seconds,
+            "active_threshold": self.active_threshold,
+            "source_emotion_ids": [str(item) for item in self.source_emotion_ids],
+        }
+
+    @classmethod
+    def from_state_value(cls, value: object) -> "MoodState":
+        if not isinstance(value, dict):
+            raise ContractValidationError("mood state must be an object")
+        source = value.get("source_emotion_ids", ())
+        if not isinstance(source, (list, tuple)):
+            raise ContractValidationError("mood source emotion IDs must be an array")
+        try:
+            return cls(
+                mood_id=UUID(str(value["mood_id"])),
+                target=value["target"],
+                valence=value["valence"],
+                scope=value["scope"],
+                intensity=value["intensity"],
+                updated_at=datetime.fromisoformat(value["updated_at"]),
+                arousal=value.get("arousal", 0.5),
+                control=value.get("control", 0.5),
+                certainty=value.get("certainty", 0.5),
+                half_life_seconds=value.get("half_life_seconds", 86400.0),
+                active_threshold=value.get("active_threshold", 0.05),
+                source_emotion_ids=tuple(UUID(str(item)) for item in source),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise ContractValidationError("invalid mood state") from error
+
+
+def decay_mood(state: MoodState, as_of: datetime) -> MoodState | None:
+    if not isinstance(state, MoodState):
+        raise ContractValidationError("mood state is invalid")
+    _aware(as_of, "mood as_of")
+    if as_of < state.updated_at:
+        return None
+    elapsed = (as_of - state.updated_at).total_seconds()
+    intensity = state.intensity * (0.5 ** (elapsed / state.half_life_seconds))
+    if intensity < state.active_threshold:
+        return None
+    return MoodState(
+        mood_id=state.mood_id,
+        target=state.target,
+        valence=state.valence,
+        scope=state.scope,
+        intensity=intensity,
+        updated_at=state.updated_at,
+        arousal=state.arousal,
+        control=state.control,
+        certainty=state.certainty,
+        half_life_seconds=state.half_life_seconds,
+        active_threshold=state.active_threshold,
+        source_emotion_ids=state.source_emotion_ids,
+    )
+
+
+def accumulate_mood(
+    mood: MoodState | None,
+    emotion: EmotionState,
+    *,
+    as_of: datetime,
+    learning_rate: float = 0.25,
+) -> MoodState:
+    """Blend one emotion into a slower mood view deterministically."""
+    if not isinstance(emotion, EmotionState):
+        raise ContractValidationError("emotion state is invalid")
+    if not 0.0 < learning_rate <= 1.0:
+        raise ContractValidationError("mood learning rate must be between 0 and 1")
+    _aware(as_of, "mood as_of")
+    decayed = None if mood is None else decay_mood(mood, as_of)
+    weight = max(0.01, min(1.0, emotion.intensity * learning_rate))
+    if decayed is None:
+        return MoodState(
+            mood_id=uuid5(NAMESPACE_URL, f"mood:{emotion.scope}:{emotion.emotion_id}"),
+            target=emotion.target,
+            valence=emotion.valence,
+            scope=emotion.scope,
+            intensity=emotion.intensity,
+            updated_at=as_of,
+            arousal=emotion.arousal,
+            control=emotion.control,
+            certainty=emotion.certainty,
+            source_emotion_ids=(emotion.emotion_id,),
+        )
+    return MoodState(
+        mood_id=decayed.mood_id,
+        target=decayed.target,
+        valence=(
+            decayed.valence
+            if decayed.intensity > emotion.intensity
+            else emotion.valence
+        ),
+        scope=decayed.scope,
+        intensity=decayed.intensity + (emotion.intensity - decayed.intensity) * weight,
+        updated_at=as_of,
+        arousal=decayed.arousal + (emotion.arousal - decayed.arousal) * weight,
+        control=decayed.control + (emotion.control - decayed.control) * weight,
+        certainty=decayed.certainty + (emotion.certainty - decayed.certainty) * weight,
+        half_life_seconds=decayed.half_life_seconds,
+        active_threshold=decayed.active_threshold,
+        source_emotion_ids=(*decayed.source_emotion_ids[-19:], emotion.emotion_id),
     )
 
 
