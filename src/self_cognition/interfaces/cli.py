@@ -42,7 +42,7 @@ def main(argv: list[str] | None = None, *, container: ApplicationContainer | Non
 
 
 def _command_args(argv: list[str]) -> tuple[str | None, list[str]]:
-    aliases = {"chat", "worker", "proactive", "mailbox", "mailbox-ack", "memory", "memories", "correct", "export", "forget-dry-run", "forget", "replay", "doctor", "approve", "settings"}
+    aliases = {"chat", "worker", "proactive", "mailbox", "mailbox-ack", "emotion", "affect", "memory", "memories", "correct", "export", "forget-dry-run", "forget", "replay", "doctor", "approve", "settings"}
     return (argv[0], argv[1:]) if argv and argv[0] in aliases else (None, argv)
 
 
@@ -113,7 +113,9 @@ def _run_command(command: str, argv: list[str], container: ApplicationContainer 
     subject = SubjectScope.legacy_user(args.subject_id)
     lifecycle_context = dependencies.lifecycle if container is None else nullcontext()
     with lifecycle_context:
-        if command in {"memory", "memories"}:
+        if command in {"emotion", "affect"}:
+            payload = dependencies.affect_view.view(subject, as_of=SYSTEM_CLOCK.now())
+        elif command in {"memory", "memories"}:
             payload: object = [memory_to_dict(item) for item in dependencies.memory_repository.read_by_subject(subject)]
         elif command == "proactive":
             payload = [

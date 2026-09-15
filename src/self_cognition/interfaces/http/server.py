@@ -115,6 +115,15 @@ def _handle(container: ApplicationContainer, method: str, path: str, query: dict
                 container.proactive.mailbox(subject, as_of=SYSTEM_CLOCK.now())
             )
         }
+    if method == "GET" and path in {"/emotion", "/affect"}:
+        return container.affect_view.view(subject, as_of=SYSTEM_CLOCK.now())
+    if method == "GET" and path == "/mood":
+        view = container.affect_view.view(subject, as_of=SYSTEM_CLOCK.now())
+        return {
+            "as_of": view["as_of"],
+            "state_version": view["state_version"],
+            "mood": view["mood"],
+        }
     if method == "POST" and path.startswith("/mailbox/") and path.endswith("/ack"):
         intention_id = UUID(path.split("/")[2])
         result = container.proactive.acknowledge(subject, intention_id, context=_context())

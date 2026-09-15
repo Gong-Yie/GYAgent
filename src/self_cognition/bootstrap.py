@@ -2,6 +2,7 @@ from dataclasses import dataclass, replace
 from datetime import timedelta
 from pathlib import Path
 
+from self_cognition.application.affect import AffectViewService
 from self_cognition.application.execute_action import ActionService
 from self_cognition.application.process_event import ProcessEventService
 from self_cognition.application.converse import ConverseService
@@ -171,6 +172,7 @@ class ApplicationContainer:
     event_store: EventStore
     evidence_repository: EvidenceRepository
     state_repository: StateRepository
+    affect_view: AffectViewService
     memory_repository: MemoryRepository
     memory_encoding: MemoryEncodingService
     memory_access: MemoryAccessService
@@ -302,6 +304,7 @@ def build_container(
     run_recovery.recover(SYSTEM_CLOCK.now())
     evidence_repository = InMemoryEvidenceRepository()
     state_repository = FileStateRepository(layout.states)
+    affect_view = AffectViewService(state_repository)
     memory_repository = FileMemoryRepository(
         layout.memories,
         layout.indexes / "memories",
@@ -591,6 +594,7 @@ def build_container(
         event_store=event_store,
         evidence_repository=evidence_repository,
         state_repository=state_repository,
+        affect_view=affect_view,
         memory_repository=memory_repository,
         memory_encoding=memory_encoding,
         memory_access=memory_access,
