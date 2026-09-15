@@ -23,8 +23,18 @@ from self_cognition.runtime.run_context import RunContext
 NOW = datetime(2026, 9, 9, 17, tzinfo=timezone.utc)
 
 
+class _FixedClock:
+    def now(self) -> datetime:
+        return NOW
+
+
 def _context() -> RunContext:
-    return RunContext(uuid4(), uuid4(), NOW + timedelta(minutes=5))
+    return RunContext(
+        uuid4(),
+        uuid4(),
+        deadline=NOW + timedelta(minutes=5),
+        clock=_FixedClock(),
+    )
 
 
 def _seed(data: Path) -> tuple[SubjectScope, SubjectState]:
@@ -33,7 +43,7 @@ def _seed(data: Path) -> tuple[SubjectScope, SubjectState]:
     retained = SubjectScope.legacy_user("retained-user")
     for subject in (deleted, retained):
         result = app.process_event.process(
-            EventEnvelope.user_message(subject, "我喜欢晚上学习"),
+            EventEnvelope.user_message(subject, "我喜欢晚上学习", clock=_FixedClock()),
             _context(),
         )
         assert result.error_type is None

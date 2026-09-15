@@ -194,6 +194,8 @@ def test_build_container_uses_one_openai_model_for_all_default_agents(
         container.dialogue_model,
         container.planning_model,
         container.action_model,
+        container.proactive._model,
+        modules["semantic.llm_extractor"]._model,
         modules["metacognition.conflict_extractor"]._model,
         modules["affect.affect_extractor"]._model,
     )
@@ -205,7 +207,7 @@ def test_build_container_uses_one_openai_model_for_all_default_agents(
             "base_url": "https://models.example.test/v1",
             "max_retries": 0,
         }
-    ] * 5
+    ] * 7
 
 
 def test_build_container_rejects_partial_openai_configuration(
