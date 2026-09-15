@@ -1,5 +1,5 @@
-import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -10,17 +10,26 @@ from self_cognition.infrastructure.llm.openai_responses import (
     OpenAIResponsesCognitionModel,
 )
 from self_cognition.runtime.run_context import RunContext
+from self_cognition.settings import DotenvSecretSource
+
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_SECRETS = DotenvSecretSource(_PROJECT_ROOT / ".env")
+_LIVE_API_KEY = _SECRETS.get("OPENAI_API_KEY")
+_LIVE_MODEL = _SECRETS.get("OPENAI_MODEL")
+_LIVE_BASE_URL = _SECRETS.get("OPENAI_BASE_URL")
 
 
 @pytest.mark.live_openai
 @pytest.mark.skipif(
-    not os.getenv("OPENAI_API_KEY") or not os.getenv("OPENAI_MODEL"),
-    reason="requires OPENAI_API_KEY and OPENAI_MODEL",
+    not _LIVE_API_KEY or not _LIVE_MODEL,
+    reason="requires OPENAI_API_KEY and OPENAI_MODEL in process env or .env",
 )
 def test_real_openai_preference_extraction():
     model = OpenAIResponsesCognitionModel.from_api_key(
-        os.environ["OPENAI_API_KEY"],
-        os.environ["OPENAI_MODEL"],
+        _LIVE_API_KEY,
+        _LIVE_MODEL,
+        base_url=_LIVE_BASE_URL,
         timeout_seconds=30,
         max_output_tokens=2048,
     )
