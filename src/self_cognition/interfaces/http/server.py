@@ -124,6 +124,44 @@ def _handle(container: ApplicationContainer, method: str, path: str, query: dict
             "state_version": view["state_version"],
             "mood": view["mood"],
         }
+    if method == "POST" and path == "/emotion/correct":
+        target_field = (
+            _text(body, "target_field")
+            if "target_field" in body
+            else _text(body, "field")
+        )
+        if "value" not in body:
+            raise ValueError("value is required")
+        result = container.affect_control.correct(
+            subject,
+            field=target_field,
+            value=body["value"],
+            context=_context(),
+        )
+        return {
+            "status": result.status.value,
+            "run_id": str(result.run_id),
+            "new_version": result.new_version,
+            "error_type": result.error_type,
+        }
+    if method == "POST" and path in {"/emotion/close", "/affect/close"}:
+        return {"controls": _jsonable(container.affect_control.close(subject))}
+    if method == "POST" and path in {"/emotion/open", "/affect/open"}:
+        return {"controls": _jsonable(container.affect_control.open(subject))}
+    if method == "POST" and path == "/emotion/export":
+        result = container.affect_control.export(subject)
+        return {
+            "export_id": str(result.export_id),
+            "path": str(result.path),
+            "counts": result.counts,
+        }
+    if method == "POST" and path in {"/emotion/delete", "/emotion/forget"}:
+        return _deletion(
+            container.affect_control.delete(
+                subject,
+                now=SYSTEM_CLOCK.now(),
+            )
+        )
     if method == "POST" and path.startswith("/mailbox/") and path.endswith("/ack"):
         intention_id = UUID(path.split("/")[2])
         result = container.proactive.acknowledge(subject, intention_id, context=_context())
@@ -234,6 +272,10 @@ def _handle(container: ApplicationContainer, method: str, path: str, query: dict
             controls = container.user_control.disable_module(
                 subject, _text(body, "module_id")
             )
+        elif action == "enable_module":
+            controls = container.user_control.enable_module(
+                subject, _text(body, "module_id")
+            )
         elif action == "disable_proactive_task":
             controls = container.user_control.disable_proactive_task(
                 subject, _text(body, "task_id")
@@ -322,6 +364,8 @@ def _jsonable(value: Any) -> Any:
         return value.to_dict()
     if hasattr(value, "value") and not isinstance(value, (str, int, float, bool)):
         return value.value
+    if isinstance(value, (set, frozenset)):
+        return sorted(_jsonable(item) for item in value)
     if isinstance(value, tuple):
         return [_jsonable(item) for item in value]
     if isinstance(value, dict):

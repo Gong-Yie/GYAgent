@@ -2,7 +2,10 @@ from dataclasses import dataclass, replace
 from datetime import timedelta
 from pathlib import Path
 
-from self_cognition.application.affect import AffectViewService
+from self_cognition.application.affect import (
+    AffectControlService,
+    AffectViewService,
+)
 from self_cognition.application.execute_action import ActionService
 from self_cognition.application.process_event import ProcessEventService
 from self_cognition.application.converse import ConverseService
@@ -173,6 +176,7 @@ class ApplicationContainer:
     evidence_repository: EvidenceRepository
     state_repository: StateRepository
     affect_view: AffectViewService
+    affect_control: AffectControlService
     memory_repository: MemoryRepository
     memory_encoding: MemoryEncodingService
     memory_access: MemoryAccessService
@@ -558,6 +562,7 @@ def build_container(
         proactive,
         layout.exports,
     )
+    affect_control = AffectControlService(user_control)
     wake_worker = SchedulerWorker(
         (wake_due_intentions,),
         interval_seconds=resolved_settings.worker_poll_interval_seconds,
@@ -595,6 +600,7 @@ def build_container(
         evidence_repository=evidence_repository,
         state_repository=state_repository,
         affect_view=affect_view,
+        affect_control=affect_control,
         memory_repository=memory_repository,
         memory_encoding=memory_encoding,
         memory_access=memory_access,

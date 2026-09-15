@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from self_cognition.application.results import ProcessEventResult
+from self_cognition.application.user_control import UserControlService
 from self_cognition.core.affect import (
+    AffectAssessment,
     EmotionState,
     MoodState,
     decay_assessment,
@@ -12,6 +15,7 @@ from self_cognition.core.affect import (
 from self_cognition.core.errors import ContractValidationError
 from self_cognition.core.protocols import StateRepository
 from self_cognition.core.scopes import SubjectScope
+from self_cognition.runtime.run_context import RunContext
 
 
 class AffectViewService:
@@ -96,3 +100,95 @@ class AffectViewService:
             return None
         decayed = decay_mood(state, as_of)
         return None if decayed is None else decayed.to_state_value()
+
+
+AFFECT_MODULE_IDS = ("affect.fast_reaction", "affect.affect_extractor")
+
+
+class AffectControlService:
+    """Validated user controls for emotion, mood and affect modules."""
+
+    def __init__(self, user_control: UserControlService) -> None:
+        self._user_control = user_control
+
+    def correct(
+        self,
+        subject: SubjectScope,
+        *,
+        field: str,
+        value: object,
+        context: RunContext,
+        requester: SubjectScope | None = None,
+    ) -> ProcessEventResult:
+        validated = self._validate_value(field, value)
+        return self._user_control.correct(
+            subject,
+            target_field=field,
+            cognition_type="affect",
+            value=validated,
+            context=context,
+            requester=requester,
+        )
+
+    def close(
+        self,
+        subject: SubjectScope,
+        *,
+        requester: SubjectScope | None = None,
+    ) -> object:
+        controls: object = None
+        for module_id in AFFECT_MODULE_IDS:
+            controls = self._user_control.disable_module(
+                subject,
+                module_id,
+                requester=requester,
+            )
+        return controls
+
+    def open(
+        self,
+        subject: SubjectScope,
+        *,
+        requester: SubjectScope | None = None,
+    ) -> object:
+        controls: object = None
+        for module_id in AFFECT_MODULE_IDS:
+            controls = self._user_control.enable_module(
+                subject,
+                module_id,
+                requester=requester,
+            )
+        return controls
+
+    def export(
+        self,
+        subject: SubjectScope,
+        *,
+        requester: SubjectScope | None = None,
+    ):
+        return self._user_control.export(subject, requester=requester)
+
+    def delete(
+        self,
+        subject: SubjectScope,
+        *,
+        now,
+        requester: SubjectScope | None = None,
+    ):
+        return self._user_control.forget_subject(
+            subject,
+            now=now,
+            requester=requester,
+        )
+
+    @staticmethod
+    def _validate_value(field: str, value: object) -> dict[str, object]:
+        if field.startswith("affect.reaction."):
+            return EmotionState.from_state_value(value).to_state_value()
+        if field.startswith("affect.current."):
+            return AffectAssessment.from_state_value(value).to_state_value()
+        if field.startswith("mood."):
+            return MoodState.from_state_value(value).to_state_value()
+        raise ContractValidationError(
+            "target field is not an emotion or mood field"
+        )

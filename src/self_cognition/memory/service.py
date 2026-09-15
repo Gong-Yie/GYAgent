@@ -23,6 +23,9 @@ class MemoryEncodingService:
         self._repository = repository
         self._encoder = encoder
 
+    def supports(self, target_field: str) -> bool:
+        return self._encoder.supports(target_field)
+
     def validate_correction(
         self,
         subject: SubjectScope,

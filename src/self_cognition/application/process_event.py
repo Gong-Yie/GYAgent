@@ -285,6 +285,7 @@ class ProcessEventService:
             if (
                 self._memory_encoding is not None
                 and isinstance(payload, CognitionCorrectionPayload)
+                and self._memory_encoding.supports(payload.target_field)
             ):
                 self._memory_encoding.validate_correction(
                     recorded_event.subject,
@@ -614,6 +615,8 @@ class ProcessEventService:
         encoded = self._memory_encoding.encode_changes(state.changes)
         payload = event.payload
         if not isinstance(payload, CognitionCorrectionPayload):
+            return
+        if not self._memory_encoding.supports(payload.target_field):
             return
         replacement = next(
             (

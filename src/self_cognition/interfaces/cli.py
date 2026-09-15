@@ -114,7 +114,48 @@ def _run_command(command: str, argv: list[str], container: ApplicationContainer 
     lifecycle_context = dependencies.lifecycle if container is None else nullcontext()
     with lifecycle_context:
         if command in {"emotion", "affect"}:
-            payload = dependencies.affect_view.view(subject, as_of=SYSTEM_CLOCK.now())
+            if args.action == "close":
+                payload = _jsonable(dependencies.affect_control.close(subject))
+            elif args.action == "open":
+                payload = _jsonable(dependencies.affect_control.open(subject))
+            elif args.action == "correct":
+                if not args.target_field or args.value is None:
+                    raise ValueError("--target-field and --value are required")
+                result = dependencies.affect_control.correct(
+                    subject,
+                    field=args.target_field,
+                    value=_json_or_text(args.value),
+                    context=_context(),
+                )
+                payload = {
+                    "status": result.status.value,
+                    "run_id": str(result.run_id),
+                    "new_version": result.new_version,
+                    "error_type": result.error_type,
+                }
+            elif args.action == "export":
+                result = dependencies.affect_control.export(subject)
+                payload = {
+                    "export_id": str(result.export_id),
+                    "path": str(result.path),
+                    "counts": result.counts,
+                }
+            elif args.action in {"delete", "forget"}:
+                plan = dependencies.affect_control.delete(
+                    subject,
+                    now=SYSTEM_CLOCK.now(),
+                )
+                payload = {
+                    "plan_id": str(plan.plan_id),
+                    "status": plan.status.value,
+                    "event_count": len(plan.event_ids),
+                    "memory_count": len(plan.memory_ids),
+                }
+            else:
+                payload = dependencies.affect_view.view(
+                    subject,
+                    as_of=SYSTEM_CLOCK.now(),
+                )
         elif command in {"memory", "memories"}:
             payload: object = [memory_to_dict(item) for item in dependencies.memory_repository.read_by_subject(subject)]
         elif command == "proactive":
@@ -168,6 +209,8 @@ def _run_command(command: str, argv: list[str], container: ApplicationContainer 
                 controls = dependencies.user_control.enable_model_provider(subject, args.provider_id or "")
             elif args.action == "disable_module":
                 controls = dependencies.user_control.disable_module(subject, args.module_id or "")
+            elif args.action == "enable_module":
+                controls = dependencies.user_control.enable_module(subject, args.module_id or "")
             elif args.action == "disable_proactive_task":
                 controls = dependencies.user_control.disable_proactive_task(subject, args.task_id or "")
             elif args.action == "disable_proactive_channel":
@@ -218,11 +261,20 @@ def _error_code(error: Exception) -> str:
     return {"ValueError": "invalid_request", "LookupError": "not_found", "PermissionError": "forbidden"}.get(type(error).__name__, "internal_error")
 
 
+def _json_or_text(value: str) -> object:
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
+
+
 def _jsonable(value: object) -> object:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     if hasattr(value, "value") and not hasattr(value, "__dataclass_fields__"):
         return value.value
+    if isinstance(value, (set, frozenset)):
+        return sorted(_jsonable(item) for item in value)
     if isinstance(value, tuple):
         return [_jsonable(item) for item in value]
     if isinstance(value, dict):

@@ -228,6 +228,13 @@ class UserControlService:
         self._audit(AuditAction.CONTROL, subject, "module", module_id, {"enabled": False})
         return controls
 
+    def enable_module(self, subject: SubjectScope, module_id: str, *, requester: SubjectScope | None = None) -> UserControls:
+        self._authorize(subject, requester)
+        self._modules.enable(module_id)
+        controls = self._update(subject, "disabled_modules", module_id, False)
+        self._audit(AuditAction.CONTROL, subject, "module", module_id, {"enabled": True})
+        return controls
+
     def disable_model_provider(self, subject: SubjectScope, provider_id: str, *, requester: SubjectScope | None = None) -> UserControls:
         self._authorize(subject, requester)
         controls = self._update(subject, "disabled_model_providers", provider_id, True)
