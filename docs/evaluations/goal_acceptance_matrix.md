@@ -1,8 +1,8 @@
 # `goal.md` 验收矩阵
 
 > 更新日期：2026-09-16
-> 当前基线：`main = 85d0d01`
-> 离线验证：`492 passed, 2 deselected`
+> 当前基线：`main = c58e300`
+> 离线验证：`501 passed, 2 deselected`
 > 真实模型：`live_openai` 此前 2 项通过
 > 真实双回路：最终 60 分钟 20 个事件、20/20 对话成功、`dialogue.failed=0`、backlog 峰值 1/最终 0、死信 0、worker 无错误、stop 前 health ready=true；`failure_classification` 仅 1 次 semantic provider timeout（真实双回路为历史证据，基线 02e1ed6；本轮 WIP 未重跑 live/60 分钟）
 
@@ -19,7 +19,7 @@
 | COG-01 | 七类认知模块可独立启停、替换和降级 | 已满足 | 模块注册表、健康状态、按主体 disabled_modules 已接入事件处理 |
 | COG-02 | 身份、价值、能力、限制、目标都有版本与证据 | 部分满足 | 领域状态和规则问答已实现；身份、价值、能力在 60 分钟真实运行中的表达仍未专项评测 |
 | COG-03 | 对话稳定使用情景、语义、关系、程序性、叙事记忆 | 部分满足 | Workspace/Retrieval 已接入；真实模型对情景、语义、关系、程序性、叙事记忆的长期使用质量仍受模型波动影响 |
-| COG-04 | 区分事实、推断、偏好、假设、冲突和未知 | 部分满足 | 已有事实/推断/偏好/未知/冲突；假设类型和通用表达仍不足 |
+| COG-04 | 区分事实、推断、偏好、假设、冲突和未知 | 已满足 | 新增 CognitionType.HYPOTHESIS；状态认知类型传递到 WorkspaceItem；规则表达对假设加不确定前缀；grounding 拒绝假设支撑确定 claim；语义模型 prompt 明确 hypothesis 使用边界；单元测试覆盖 |
 | COG-05 | 线索、间隔、干扰、巩固、衰减、不确定表达 | 已满足 | 记忆生命周期测试通过；真实开放域表达仍受限 |
 | COG-06 | 认知结论可追溯到事件或系统先验 | 已满足 | provenance graph 覆盖 event/contribution/memory/relationship/narrative/emotion/mood/action request/decision/result/tool result；非事件 EvidenceRef 生成 EVIDENCE 节点，并保留 source_kind/source_ref/locator/reliability |
 
@@ -42,7 +42,7 @@
 | EXEC-02 | 无证据/低置信度不以确定语气表达 | 部分满足 | Review + claim 级字段已实现；最终 60 分钟 20/20 对话成功、0 次 generate 失败；真实模型长期校准仍待持续评测 |
 | EXEC-03 | 计划包含依赖、预算、失败分支、取消点 | 已满足 | 计划/进度/校验测试通过 |
 | EXEC-04 | 工具动作经过权限、风险、幂等检查 | 已满足 | LLM 动作判断、治理、幂等测试通过 |
-| EXEC-05 | 高风险动作等待确认由 LLM 判断 | 部分满足 | 动作确认模型已接入；真实高风险工具有限 |
+| EXEC-05 | 高风险动作等待确认由 LLM 判断 | 已满足 | 动作确认模型路径已接入；新增真实本地不可逆工具 workspace.write_file，动作模型对其返回 confirmation_required；审批审计、执行一次、幂等，路径越界等失败落为标准 action.result；测试覆盖 |
 | EXEC-06 | 工具成功、失败、超时、取消、部分完成形成标准事件 | 已满足 | action.result 标准结果测试通过 |
 
 ## 9.4 可靠性
@@ -63,7 +63,7 @@
 | OPS-01 | 替换模型、存储、索引不修改 core | 已满足 | Protocol 边界和适配器已建立 |
 | OPS-02 | 默认测试离线，真实模型单独运行 | 已满足 | `.env` 隔离和 live marker 已生效 |
 | OPS-03 | CLI、HTTP、WebUI、worker 共用应用服务 | 已满足 | CLI、HTTP、WebUI、worker 复用同一应用服务；主动消息和情绪/心境操作已接入 WebUI |
-| OPS-04 | 可查看健康、积压、用量、失败链、降级项 | 部分满足 | Health 已细化到 module/model/task/provider；新增 GET /health/history?limit=1..500、GET /health/failures?limit=1..200、HealthHistory 和 WebUI 健康页，展示 ready/backlog/dead_letters/失败链/models/modules 降级原因；仍缺真实浏览器自动化和健康历史跨重启持久化 |
+| OPS-04 | 可查看健康、积压、用量、失败链、降级项 | 已满足 | GET /health/history、GET /health/failures、WebUI 健康页与失败链；健康历史通过 FileHealthHistoryStore 跨重启恢复；新增 Edge headless 真实浏览器冒烟测试渲染健康页；API 测试覆盖 |
 | OPS-05 | 配置有默认值、校验、密钥边界、迁移 | 已满足 | 模型配置 schema 默认值/结构校验/api_key_env 密钥边界已实现；新增 v0→v1 迁移路径和测试；支持 SC_MODELS_CONFIG/SC_ENV 多环境、providers/routes、configured provider fallback；ApplicationSettings 增加 393216 输出 token 上限 |
 
 ## 9.6 主动性、情绪与真人感
@@ -95,8 +95,8 @@
 
 | 状态 | 数量 |
 | --- | ---: |
-| 已满足 | 38 |
-| 部分满足 | 6 |
+| 已满足 | 41 |
+| 部分满足 | 3 |
 | 未满足 | 0 |
 
 ## 真实双回路最终结果（2026-09-16）
@@ -178,12 +178,18 @@
 - 离线验证：`492 passed, 2 deselected`；
 - 边界：健康快照属于 cache/诊断数据，可清理、可忽略损坏，不作为事件、状态或治理权威。
 
+## 假设认知、健康持久化与高风险工具（2026-09-16）
+
+- `main = c58e300`：新增 `CognitionType.HYPOTHESIS` 和 Workspace 类型传递；规则表达、grounding 和语义 prompt 均区分假设与确定事实；
+- 健康历史新增 `FileHealthHistoryStore`，健康快照跨容器重启恢复；新增 Edge headless 真实浏览器测试渲染 `?view=health` 健康页；
+- 新增真实本地不可逆工具 `workspace.write_file`：不可逆副作用、确认要求、审批审计、执行一次、失败标准结果；
+- 离线验证：`501 passed, 2 deselected`。
+
 ## 当前仍未收口的验证项
 
-- 真实浏览器 WebUI 自动化；
+- 真实浏览器交互测试（当前为 Edge headless 页面渲染冒烟，未做点击流和多浏览器）；
 - 超过 60 分钟的情绪衰减、心境累积、沉默负例和主观体验盲测；
-- 真实高风险工具、动作确认和失败降级场景；
-- 真实模型长期校准、低置信度表达和未知/假设类型（最终 60 分钟仍有 1 次 semantic provider timeout）；
+- 真实外部高风险工具与真实 LLM 动作确认长期评测；
+- 真实模型长期校准、低置信度表达、未知/假设类型的真实使用质量（最终 60 分钟仍有 1 次 semantic provider timeout）；
 - WebUI 中情绪/心境的纠正、导出、删除全流程可视化。
-- 健康历史跨重启持久化；
 - configured provider 的真实长期 fallback 行为（当前仅离线/确定性验证）。
