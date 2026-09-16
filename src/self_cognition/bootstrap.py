@@ -87,6 +87,9 @@ from self_cognition.infrastructure.persistence.file_memory_repository import (
 from self_cognition.infrastructure.persistence.file_process_journal import (
     FileProcessJournal,
 )
+from self_cognition.infrastructure.persistence.file_provenance_store import (
+    FileProvenanceStore,
+)
 from self_cognition.infrastructure.persistence.file_processing_recovery import (
     FileProcessingRecovery,
 )
@@ -106,6 +109,7 @@ from self_cognition.runtime.engine import CognitionEngine
 from self_cognition.runtime.event_bus import RetryPolicy, SingleMachineEventBus
 from self_cognition.runtime.recovery import RunRecoveryService
 from self_cognition.runtime.run_service import RunLifecycle
+from self_cognition.indexes.provenance import ProvenanceGraphService
 from self_cognition.runtime.scheduler import DualLoopScheduler
 from self_cognition.runtime.run_context import RunContext
 from self_cognition.workers.scheduler import SchedulerWorker
@@ -183,6 +187,7 @@ class ApplicationContainer:
     affect_view: AffectViewService
     affect_control: AffectControlService
     memory_repository: MemoryRepository
+    provenance: ProvenanceGraphService
     memory_encoding: MemoryEncodingService
     memory_access: MemoryAccessService
     memory_retrieval: MemoryRetrievalService
@@ -318,6 +323,11 @@ def build_container(
         layout.memories,
         layout.indexes / "memories",
         layout.memory_access,
+    )
+    provenance = ProvenanceGraphService(
+        event_store,
+        memory_repository,
+        FileProvenanceStore(layout.indexes / "provenance"),
     )
     memory_encoding = MemoryEncodingService(
         memory_repository,
@@ -649,6 +659,7 @@ def build_container(
         affect_view=affect_view,
         affect_control=affect_control,
         memory_repository=memory_repository,
+        provenance=provenance,
         memory_encoding=memory_encoding,
         memory_access=memory_access,
         memory_retrieval=memory_retrieval,
