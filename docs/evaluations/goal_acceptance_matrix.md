@@ -1,8 +1,8 @@
 # `goal.md` 验收矩阵
 
 > 更新日期：2026-09-16
-> 当前基线：`main = affcedd`
-> 离线验证：`471 passed, 2 deselected`
+> 当前基线：`main = f385521`
+> 离线验证：`474 passed, 2 deselected`
 > 真实模型：`live_openai` 此前 2 项通过
 > 真实双回路：最终 60 分钟 20 个事件、20/20 对话成功、`dialogue.failed=0`、backlog 峰值 1/最终 0、死信 0、worker 无错误、stop 前 health ready=true；`failure_classification` 仅 1 次 semantic provider timeout
 
@@ -53,7 +53,7 @@
 | REL-02 | 单模块失败不阻塞独立模块 | 已满足 | Engine 隔离测试通过 |
 | REL-03 | 崩溃后识别未完成运行并恢复/终止 | 已满足 | 真实子进程强杀测试：pending event 重启后恢复入队并成功 drain；running RunRecord 重启后明确标记 INTERRUPTED |
 | REL-04 | 取消传播到模型、工具、worker | 已满足 | 模型/动作取消测试已有；新增运行中 worker 取消集成测试，RunLifecycle.request_cancel 可传播到 RunContext 和模块 |
-| REL-05 | 本地事件、查询、写入有延迟指标 | 部分满足 | Metrics 已接入；真实延迟分位数未系统评测 |
+| REL-05 | 本地事件、查询、写入有延迟指标 | 已满足 | 新增 MetricsRegistry 百分位能力与 `scripts/measure_local_latency.py`；20 次本地采样 p50/p95/p99：ingest 0.0174/0.0196/0.0196s，query 0.00122/0.00144/0.00145s，state_write 0.00432/0.00495/0.00510s |
 | REL-06 | 备份恢复校验事件数、版本和索引 | 已满足 | backup/restore/migrate 测试通过 |
 
 ## 9.5 可替换性与可运维性
@@ -95,8 +95,8 @@
 
 | 状态 | 数量 |
 | --- | ---: |
-| 已满足 | 34 |
-| 部分满足 | 10 |
+| 已满足 | 35 |
+| 部分满足 | 9 |
 | 未满足 | 0 |
 
 ## 真实双回路最终结果（2026-09-16）
@@ -129,11 +129,17 @@
 - 跨重启：`EmotionState`、`MoodState`、`ProactiveIntention`、Mailbox 在重启后保持一致；
 - 覆盖测试：`test/test_phase41_reliability.py`。
 
+## 多进程 worker 与本地延迟指标（2026-09-16）
+
+- 多进程 worker：3 个进程按 subject shard 并发 drain 9 个事件；每个 subject 的 3 个事件保序处理，state.version=3，恰好 9 条 state.reduced，无 pending/dead letters；
+- 并发修复：`FileEventStore` 增加跨进程 append 锁，`append_many` 不再用进程内旧缓存全量重写事件日志；`FileProcessJournal` 使用 `BlockingFileLock`，避免 recovery/claim 竞争直接失败；
+- 延迟采样（20 samples）：event_ingest p50/p95/p99 = 0.0174/0.0196/0.0196s；query = 0.00122/0.00144/0.00145s；state_write = 0.00432/0.00495/0.00510s；
+- 覆盖：`scripts/measure_local_latency.py`、`test/test_local_latency_metrics.py`、`test/test_phase41_reliability.py` 多进程用例。
+
 ## 当前仍未收口的验证项
 
 - 真实浏览器 WebUI 自动化；
 - 超过 60 分钟的情绪衰减、心境累积、沉默负例和主观体验盲测；
-- 多进程 worker；
 - 向量/图谱索引和跨记忆/关系/叙事的完整来源图；
 - 真实高风险工具、动作确认和失败降级场景；
 - 真实模型长期校准、低置信度表达和未知/假设类型（最终 60 分钟仍有 1 次 semantic provider timeout）；
