@@ -15,6 +15,7 @@ from self_cognition.core.scopes import (
     normalize_subject_scope,
 )
 from self_cognition.core.state import SubjectState
+from self_cognition.infrastructure.persistence.file_lock import BlockingFileLock
 from self_cognition.infrastructure.persistence.serialization import (
     state_from_json,
     state_to_json,
@@ -28,6 +29,10 @@ class FileStateRepository:
 
     def load(self, subject: SubjectScope | str) -> SubjectState | None:
         subject_scope = normalize_subject_scope(subject)
+        with BlockingFileLock(self._lock_path_for(subject_scope)):
+            return self._load_unlocked(subject_scope)
+
+    def _load_unlocked(self, subject_scope: SubjectScope) -> SubjectState | None:
         path = self._path_for(subject_scope)
         if not path.exists():
             return None
@@ -46,26 +51,32 @@ class FileStateRepository:
         return state
 
     def save(self, state: SubjectState, expected_version: int) -> None:
-        current_state = self.load(state.subject_scope)
-        current_version = current_state.version if current_state is not None else 0
-        if expected_version != current_version:
-            raise VersionConflictError(
-                "expected version does not match stored state version"
+        subject_scope = state.subject_scope
+        with BlockingFileLock(self._lock_path_for(subject_scope)):
+            current_state = self._load_unlocked(subject_scope)
+            current_version = (
+                current_state.version if current_state is not None else 0
             )
-        if state.version <= current_version:
-            raise VersionConflictError(
-                "new state version must be greater than stored state version"
-            )
-
-        self._write(state)
+            if expected_version != current_version:
+                raise VersionConflictError(
+                    "expected version does not match stored state version"
+                )
+            if state.version <= current_version:
+                raise VersionConflictError(
+                    "new state version must be greater than stored state version"
+                )
+            self._write_unlocked(state)
 
     def replace(self, state: SubjectState) -> None:
-        self._write(state)
+        with BlockingFileLock(self._lock_path_for(state.subject_scope)):
+            self._write_unlocked(state)
 
     def delete(self, subject: SubjectScope) -> None:
-        self._path_for(subject).unlink(missing_ok=True)
+        subject_scope = normalize_subject_scope(subject)
+        with BlockingFileLock(self._lock_path_for(subject_scope)):
+            self._path_for(subject_scope).unlink(missing_ok=True)
 
-    def _write(self, state: SubjectState) -> None:
+    def _write_unlocked(self, state: SubjectState) -> None:
         target = self._path_for(state.subject_scope)
         payload = state_to_json(state)
         temporary_path: Path | None = None
@@ -88,6 +99,9 @@ class FileStateRepository:
         finally:
             if temporary_path is not None:
                 temporary_path.unlink(missing_ok=True)
+
+    def _lock_path_for(self, subject: SubjectScope | str) -> Path:
+        return self._path_for(subject).with_suffix(".lock")
 
     def _path_for(self, subject: SubjectScope | str) -> Path:
         subject_scope = normalize_subject_scope(subject)

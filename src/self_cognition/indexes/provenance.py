@@ -4,14 +4,22 @@ from datetime import datetime
 from typing import Mapping
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from self_cognition.core.actions import (
+    ActionDecisionPayload,
+    ActionProposedPayload,
+    ActionResultPayload,
+)
 from self_cognition.core.affect import MOOD_FIELD, EmotionState, MoodState
 from self_cognition.core.contributions import CognitiveContribution
 from self_cognition.core.errors import ContractValidationError
 from self_cognition.core.events import (
     CognitionModuleResultPayload,
     EventEnvelope,
+    EventSource,
 )
 from self_cognition.core.memories import MemoryRecord
+from self_cognition.core.narratives import NarrativeRecord
+from self_cognition.core.relationships import RelationshipState
 from self_cognition.core.provenance import (
     ProvenanceEdge,
     ProvenanceEdgeKind,
@@ -174,6 +182,26 @@ def build_provenance_graph(
             )
 
     for contribution in contributions.values():
+        relationship_node = _relationship_node(contribution)
+        if relationship_node is not None:
+            nodes[relationship_node.node_id] = relationship_node
+            _link_contribution_node(
+                edges,
+                relationship_node,
+                contribution,
+                event_nodes,
+            )
+        narrative_node = _narrative_node(contribution)
+        if narrative_node is not None:
+            nodes[narrative_node.node_id] = narrative_node
+            _link_contribution_node(
+                edges,
+                narrative_node,
+                contribution,
+                event_nodes,
+            )
+
+    for contribution in contributions.values():
         affect_node = _affect_node(contribution)
         if affect_node is None:
             continue
@@ -229,6 +257,141 @@ def build_provenance_graph(
                     attributes={},
                 )
 
+    decision_by_action: dict[UUID, UUID] = {}
+    for event in events:
+        payload = event.payload
+        if isinstance(payload, ActionProposedPayload):
+            request = payload.request
+            nodes[request.action_id] = ProvenanceNode(
+                node_id=request.action_id,
+                kind=ProvenanceNodeKind.ACTION_REQUEST,
+                subject=request.owner,
+                recorded_at=request.requested_at,
+                attributes={
+                    "plan_id": str(request.plan_id),
+                    "plan_version": request.plan_version,
+                    "step_id": request.step_id,
+                    "tool_id": request.tool_id,
+                    "idempotency_key": request.idempotency_key,
+                    "requested_at": request.requested_at.isoformat(),
+                    "argument_keys": sorted(str(key) for key in request.arguments),
+                    "expected_side_effect_count": len(request.expected_side_effects),
+                },
+            )
+            _add_edge(
+                edges,
+                kind=ProvenanceEdgeKind.DERIVED_FROM,
+                source=request.action_id,
+                target=event.event_id,
+                subject=request.owner,
+                recorded_at=event.recorded_at,
+                attributes={},
+            )
+        elif isinstance(payload, ActionDecisionPayload):
+            request = payload.request
+            decision = payload.decision
+            decision_by_action[request.action_id] = decision.decision_id
+            nodes[decision.decision_id] = ProvenanceNode(
+                node_id=decision.decision_id,
+                kind=ProvenanceNodeKind.ACTION_DECISION,
+                subject=request.owner,
+                recorded_at=decision.decided_at,
+                attributes={
+                    "status": decision.status.value,
+                    "reason": decision.reason,
+                    "value_basis": list(decision.value_basis),
+                    "relationship_context": decision.relationship_context,
+                    "risks": list(decision.risks),
+                    "evidence_ids": [str(value) for value in decision.evidence_ids],
+                    "valid_until": decision.valid_until.isoformat(),
+                    "not_before": (
+                        decision.not_before.isoformat()
+                        if decision.not_before is not None
+                        else None
+                    ),
+                    "confirmation_prompt": decision.confirmation_prompt,
+                },
+            )
+            _ensure_action_request_placeholder(
+                nodes,
+                request.action_id,
+                request.owner,
+                request.requested_at,
+            )
+            for target_id in (request.action_id, event.event_id):
+                _add_edge(
+                    edges,
+                    kind=ProvenanceEdgeKind.DERIVED_FROM,
+                    source=decision.decision_id,
+                    target=target_id,
+                    subject=request.owner,
+                    recorded_at=decision.decided_at,
+                    attributes={},
+                )
+            for evidence_id in decision.evidence_ids:
+                if evidence_id not in event_nodes:
+                    continue
+                _add_edge(
+                    edges,
+                    kind=ProvenanceEdgeKind.DERIVED_FROM,
+                    source=decision.decision_id,
+                    target=evidence_id,
+                    subject=request.owner,
+                    recorded_at=decision.decided_at,
+                    attributes={"source_kind": "event"},
+                )
+        elif isinstance(payload, ActionResultPayload):
+            result = payload.result
+            nodes[result.result_id] = ProvenanceNode(
+                node_id=result.result_id,
+                kind=ProvenanceNodeKind.ACTION_RESULT,
+                subject=result.owner,
+                recorded_at=result.recorded_at,
+                attributes={
+                    "status": result.status.value,
+                    "summary": result.summary,
+                    "error_type": result.error_type,
+                    "actual_side_effect_count": len(result.actual_side_effects),
+                    "source": event.source.value,
+                    "tool_result": event.source is EventSource.TOOL,
+                },
+            )
+            _ensure_action_request_placeholder(
+                nodes,
+                result.action_id,
+                result.owner,
+                result.recorded_at,
+            )
+            _add_edge(
+                edges,
+                kind=ProvenanceEdgeKind.DERIVED_FROM,
+                source=result.result_id,
+                target=result.action_id,
+                subject=result.owner,
+                recorded_at=result.recorded_at,
+                attributes={},
+            )
+            decision_id = decision_by_action.get(result.action_id)
+            if decision_id is not None:
+                _add_edge(
+                    edges,
+                    kind=ProvenanceEdgeKind.DERIVED_FROM,
+                    source=result.result_id,
+                    target=decision_id,
+                    subject=result.owner,
+                    recorded_at=result.recorded_at,
+                    attributes={},
+                )
+            _add_edge(
+                edges,
+                kind=ProvenanceEdgeKind.DERIVED_FROM,
+                source=result.result_id,
+                target=event.event_id,
+                subject=result.owner,
+                recorded_at=event.recorded_at,
+                attributes={"tool_result": event.source is EventSource.TOOL},
+            )
+
     return ProvenanceGraph(
         mind_id=mind.mind_id,
         nodes=tuple(sorted(nodes.values(), key=lambda item: item.node_id.int)),
@@ -262,11 +425,44 @@ class ProvenanceGraphService:
     def delete(self, mind: MindScope) -> None:
         self._store.delete(mind)
 
+    def rebuild_all(self) -> tuple[ProvenanceGraph, ...]:
+        known = set(self._known_mind_ids())
+        for stale_mind_id in set(self._store.known_mind_ids()) - known:
+            self._store.delete(MindScope(stale_mind_id))
+        return tuple(
+            self.rebuild(MindScope(mind_id))
+            for mind_id in sorted(known)
+        )
+
+    def delete_all(self) -> None:
+        self._store.delete_all()
+
+    def verify(self) -> bool:
+        known = set(self._known_mind_ids())
+        stored = set(self._store.known_mind_ids())
+        if known != stored:
+            return False
+        for mind_id in known:
+            graph = self.load(MindScope(mind_id))
+            if graph is None or graph.mind_id != mind_id:
+                return False
+        return True
+
     def source_events(self, mind: MindScope, node_id: UUID):
         graph = self.load(mind)
         if graph is None:
             graph = self.rebuild(mind)
         return graph.source_events(node_id)
+
+    def _known_mind_ids(self) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                {
+                    event.subject.mind.mind_id
+                    for event in self._event_store.read_all()
+                }
+            )
+        )
 
 
 def _affect_node(contribution: CognitiveContribution) -> ProvenanceNode | None:
@@ -337,6 +533,168 @@ def _mood_source_emotion_ids(contribution: CognitiveContribution) -> tuple[UUID,
         except (TypeError, ValueError):
             continue
     return tuple(result)
+
+
+def _link_contribution_node(
+    edges: dict[UUID, ProvenanceEdge],
+    node: ProvenanceNode,
+    contribution: CognitiveContribution,
+    event_nodes: Mapping[UUID, ProvenanceNode],
+) -> None:
+    _add_edge(
+        edges,
+        kind=ProvenanceEdgeKind.DERIVED_FROM,
+        source=node.node_id,
+        target=contribution.contribution_id,
+        subject=node.subject,
+        recorded_at=node.recorded_at,
+        attributes={},
+    )
+    for evidence in contribution.evidence_refs:
+        if evidence.evidence_id not in event_nodes:
+            continue
+        _add_edge(
+            edges,
+            kind=ProvenanceEdgeKind.DERIVED_FROM,
+            source=node.node_id,
+            target=evidence.evidence_id,
+            subject=node.subject,
+            recorded_at=node.recorded_at,
+            attributes={"source_kind": evidence.source_kind.value},
+        )
+
+
+def _relationship_node(
+    contribution: CognitiveContribution,
+) -> ProvenanceNode | None:
+    if not contribution.target_field.startswith("relationships."):
+        return None
+    value = contribution.value
+    if isinstance(value, Mapping):
+        try:
+            record = RelationshipState.from_state_value(dict(value))
+        except ContractValidationError:
+            record = None
+        if record is not None:
+            node_id = uuid5(
+                NAMESPACE_URL,
+                "provenance:relationship:"
+                f"{record.source.mind.mind_id}:"
+                f"{record.source.subject.subject_id}:"
+                f"{record.target.subject.subject_id}:"
+                f"{record.relation}:{record.context}",
+            )
+            return ProvenanceNode(
+                node_id=node_id,
+                kind=ProvenanceNodeKind.RELATIONSHIP,
+                subject=record.source,
+                recorded_at=contribution.created_at,
+                attributes={
+                    "relation": record.relation,
+                    "context": record.context,
+                    "source_subject_id": record.source.subject.subject_id,
+                    "target_subject_id": record.target.subject.subject_id,
+                    "target_kind": record.target.subject.kind.value,
+                    "shared_experience_ids": [
+                        str(value) for value in record.shared_experience_ids
+                    ],
+                    "boundaries": list(record.boundaries),
+                    "commitments": list(record.commitments),
+                    "disclosure_decision": record.disclosure_decision.value,
+                    "confidence": record.confidence,
+                },
+            )
+    if isinstance(value, str) and value.strip():
+        parts = contribution.target_field.split(".")
+        target_subject_id = parts[1] if len(parts) >= 3 else contribution.target_field
+        node_id = uuid5(
+            NAMESPACE_URL,
+            f"provenance:relationship-role:{contribution.contribution_id}",
+        )
+        return ProvenanceNode(
+            node_id=node_id,
+            kind=ProvenanceNodeKind.RELATIONSHIP,
+            subject=contribution.target,
+            recorded_at=contribution.created_at,
+            attributes={
+                "relation": value,
+                "target_subject_id": target_subject_id,
+                "target_field": contribution.target_field,
+            },
+        )
+    return None
+
+
+def _narrative_node(
+    contribution: CognitiveContribution,
+) -> ProvenanceNode | None:
+    target_field = contribution.target_field
+    if not (
+        target_field.startswith("narrative.")
+        or target_field.startswith("narratives.")
+    ):
+        return None
+    if not isinstance(contribution.value, Mapping):
+        return None
+    value = contribution.value
+    try:
+        record = NarrativeRecord.from_state_value(dict(value))
+    except ContractValidationError:
+        record = None
+    if record is not None:
+        node_id = uuid5(
+            NAMESPACE_URL,
+            f"provenance:narrative:{record.narrative_id}",
+        )
+        return ProvenanceNode(
+            node_id=node_id,
+            kind=ProvenanceNodeKind.NARRATIVE,
+            subject=record.subject,
+            recorded_at=contribution.created_at,
+            attributes={
+                "layer": record.layer.value,
+                "theme": record.theme,
+                "stage": record.stage,
+                "summary": record.summary,
+                "occurred_at": record.occurred_at,
+                "unknowns": list(record.unknowns),
+                "revision_of": record.revision_of,
+                "version": record.version,
+            },
+        )
+    node_id = uuid5(
+        NAMESPACE_URL,
+        f"provenance:narrative-contribution:{contribution.contribution_id}",
+    )
+    return ProvenanceNode(
+        node_id=node_id,
+        kind=ProvenanceNodeKind.NARRATIVE,
+        subject=contribution.target,
+        recorded_at=contribution.created_at,
+        attributes={
+            "theme": value.get("theme"),
+            "stage": value.get("stage"),
+            "summary": value.get("summary"),
+            "occurred_at": value.get("occurred_at"),
+        },
+    )
+
+
+def _ensure_action_request_placeholder(
+    nodes: dict[UUID, ProvenanceNode],
+    action_id: UUID,
+    subject,
+    recorded_at: datetime,
+) -> None:
+    if action_id in nodes:
+        return
+    nodes[action_id] = ProvenanceNode(
+        node_id=action_id,
+        kind=ProvenanceNodeKind.ACTION_REQUEST,
+        subject=subject,
+        recorded_at=recorded_at,
+        attributes={"placeholder": True},
+    )
 
 
 def _emotion_node_id(emotion_id: UUID) -> UUID:

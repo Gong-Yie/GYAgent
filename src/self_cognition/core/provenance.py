@@ -20,10 +20,16 @@ PROVENANCE_SCHEMA_VERSION = 1
 
 class ProvenanceNodeKind(str, Enum):
     EVENT = "event"
+    EVIDENCE = "evidence"
     CONTRIBUTION = "contribution"
     MEMORY = "memory"
+    RELATIONSHIP = "relationship"
+    NARRATIVE = "narrative"
     EMOTION = "emotion"
     MOOD = "mood"
+    ACTION_REQUEST = "action_request"
+    ACTION_DECISION = "action_decision"
+    ACTION_RESULT = "action_result"
 
 
 class ProvenanceEdgeKind(str, Enum):
