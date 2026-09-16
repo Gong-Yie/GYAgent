@@ -1,8 +1,8 @@
 # `goal.md` 验收矩阵
 
 > 更新日期：2026-09-16
-> 当前基线：`main = 6e43a12`
-> 离线验证：`487 passed, 2 deselected`
+> 当前基线：`main = 85d0d01`
+> 离线验证：`492 passed, 2 deselected`
 > 真实模型：`live_openai` 此前 2 项通过
 > 真实双回路：最终 60 分钟 20 个事件、20/20 对话成功、`dialogue.failed=0`、backlog 峰值 1/最终 0、死信 0、worker 无错误、stop 前 health ready=true；`failure_classification` 仅 1 次 semantic provider timeout（真实双回路为历史证据，基线 02e1ed6；本轮 WIP 未重跑 live/60 分钟）
 
@@ -63,8 +63,8 @@
 | OPS-01 | 替换模型、存储、索引不修改 core | 已满足 | Protocol 边界和适配器已建立 |
 | OPS-02 | 默认测试离线，真实模型单独运行 | 已满足 | `.env` 隔离和 live marker 已生效 |
 | OPS-03 | CLI、HTTP、WebUI、worker 共用应用服务 | 已满足 | CLI、HTTP、WebUI、worker 复用同一应用服务；主动消息和情绪/心境操作已接入 WebUI |
-| OPS-04 | 可查看健康、积压、用量、失败链、降级项 | 部分满足 | Health 已细化到 module/model/task/provider；新增 GET /health/history?limit=1..500、HealthHistory(max_entries=500) 和 WebUI 健康页，展示 ready/backlog/dead_letters/models/modules 降级原因；仍为进程内历史，不含持久化失败链路和真实浏览器验证 |
-| OPS-05 | 配置有默认值、校验、密钥边界、迁移 | 部分满足 | 配置校验和 schema 迁移已实现；新增 config/models.json schema（schema_version/default_environment/environments/providers/routes、api_key_env 密钥边界、非法字段/未知环境/未知 provider 校验）、SC_MODELS_CONFIG/SC_ENV 选择、ModelRouter configured fallback；仍缺自动 schema 迁移实现和 provider 健康跨进程持久化 |
+| OPS-04 | 可查看健康、积压、用量、失败链、降级项 | 部分满足 | Health 已细化到 module/model/task/provider；新增 GET /health/history?limit=1..500、GET /health/failures?limit=1..200、HealthHistory 和 WebUI 健康页，展示 ready/backlog/dead_letters/失败链/models/modules 降级原因；仍缺真实浏览器自动化和健康历史跨重启持久化 |
+| OPS-05 | 配置有默认值、校验、密钥边界、迁移 | 已满足 | 模型配置 schema 默认值/结构校验/api_key_env 密钥边界已实现；新增 v0→v1 迁移路径和测试；支持 SC_MODELS_CONFIG/SC_ENV 多环境、providers/routes、configured provider fallback；ApplicationSettings 增加 393216 输出 token 上限 |
 
 ## 9.6 主动性、情绪与真人感
 
@@ -95,8 +95,8 @@
 
 | 状态 | 数量 |
 | --- | ---: |
-| 已满足 | 37 |
-| 部分满足 | 7 |
+| 已满足 | 38 |
+| 部分满足 | 6 |
 | 未满足 | 0 |
 
 ## 真实双回路最终结果（2026-09-16）
@@ -171,6 +171,13 @@
 - 离线验证：`487 passed, 2 deselected`；
 - 边界：健康历史为进程内有界内存历史，重启后丢失；configured fallback 的自动化验证覆盖注册优先级与 primary degraded 后 next-call 选择 backup，未重跑真实模型/长期双回路。
 
+## 模型健康恢复与失败链（2026-09-16）
+
+- `main = 85d0d01`：新增 `FileModelHealthStore` 有界诊断快照，`ModelRouter` 支持 `health_snapshot` / `restore_health`；provider 降级状态与冷却跨进程恢复，正常成功不额外落盘；
+- 失败链：`RunRepository.read_recent_failures`、`GET /health/failures?limit=1..200` 和 WebUI 最近失败链，展示 status/kind/run_id/error_type/termination_reason；
+- 离线验证：`492 passed, 2 deselected`；
+- 边界：健康快照属于 cache/诊断数据，可清理、可忽略损坏，不作为事件、状态或治理权威。
+
 ## 当前仍未收口的验证项
 
 - 真实浏览器 WebUI 自动化；
@@ -178,5 +185,5 @@
 - 真实高风险工具、动作确认和失败降级场景；
 - 真实模型长期校准、低置信度表达和未知/假设类型（最终 60 分钟仍有 1 次 semantic provider timeout）；
 - WebUI 中情绪/心境的纠正、导出、删除全流程可视化。
-- 模型配置的自动 schema 迁移、跨进程 provider 健康持久化和健康历史跨重启持久化；
+- 健康历史跨重启持久化；
 - configured provider 的真实长期 fallback 行为（当前仅离线/确定性验证）。
