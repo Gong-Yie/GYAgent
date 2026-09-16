@@ -1,10 +1,10 @@
 # `goal.md` 验收矩阵
 
 > 更新日期：2026-09-16
-> 当前基线：`main = f70b104`
-> 离线验证：`480 passed, 2 deselected`
+> 当前基线：`main = 6e43a12`
+> 离线验证：`487 passed, 2 deselected`
 > 真实模型：`live_openai` 此前 2 项通过
-> 真实双回路：最终 60 分钟 20 个事件、20/20 对话成功、`dialogue.failed=0`、backlog 峰值 1/最终 0、死信 0、worker 无错误、stop 前 health ready=true；`failure_classification` 仅 1 次 semantic provider timeout
+> 真实双回路：最终 60 分钟 20 个事件、20/20 对话成功、`dialogue.failed=0`、backlog 峰值 1/最终 0、死信 0、worker 无错误、stop 前 health ready=true；`failure_classification` 仅 1 次 semantic provider timeout（真实双回路为历史证据，基线 02e1ed6；本轮 WIP 未重跑 live/60 分钟）
 
 状态说明：
 
@@ -63,8 +63,8 @@
 | OPS-01 | 替换模型、存储、索引不修改 core | 已满足 | Protocol 边界和适配器已建立 |
 | OPS-02 | 默认测试离线，真实模型单独运行 | 已满足 | `.env` 隔离和 live marker 已生效 |
 | OPS-03 | CLI、HTTP、WebUI、worker 共用应用服务 | 已满足 | CLI、HTTP、WebUI、worker 复用同一应用服务；主动消息和情绪/心境操作已接入 WebUI |
-| OPS-04 | 可查看健康、积压、用量、失败链、降级项 | 部分满足 | Health 已细化到 module/model/task/provider；WebUI 长期健康、积压和降级历史展示仍不完整 |
-| OPS-05 | 配置有默认值、校验、密钥边界、迁移 | 部分满足 | 配置校验和 schema 迁移已实现；供应商/多环境配置仍有限 |
+| OPS-04 | 可查看健康、积压、用量、失败链、降级项 | 部分满足 | Health 已细化到 module/model/task/provider；新增 GET /health/history?limit=1..500、HealthHistory(max_entries=500) 和 WebUI 健康页，展示 ready/backlog/dead_letters/models/modules 降级原因；仍为进程内历史，不含持久化失败链路和真实浏览器验证 |
+| OPS-05 | 配置有默认值、校验、密钥边界、迁移 | 部分满足 | 配置校验和 schema 迁移已实现；新增 config/models.json schema（schema_version/default_environment/environments/providers/routes、api_key_env 密钥边界、非法字段/未知环境/未知 provider 校验）、SC_MODELS_CONFIG/SC_ENV 选择、ModelRouter configured fallback；仍缺自动 schema 迁移实现和 provider 健康跨进程持久化 |
 
 ## 9.6 主动性、情绪与真人感
 
@@ -164,6 +164,13 @@
 - action decision 中无法解析为事件的 evidence UUID 生成 placeholder EVIDENCE 节点，不再丢边；
 - 覆盖：`test/test_provenance_graph.py`。
 
+## 多 provider 模型配置与健康历史（2026-09-16）
+
+- `main = 6e43a12`：新增 `config/models.json` schema、`SC_MODELS_CONFIG`/`SC_ENV` 多环境选择、`ModelRouter` configured provider fallback、configured proactive 接线和输出 token 393216 上限校验；
+- 新增 `GET /health/history?limit=1..500`、`HealthHistory(max_entries=500)` 和 WebUI 健康页，展示 ready、backlog、dead_letters、models/modules 降级原因；
+- 离线验证：`487 passed, 2 deselected`；
+- 边界：健康历史为进程内有界内存历史，重启后丢失；configured fallback 的自动化验证覆盖注册优先级与 primary degraded 后 next-call 选择 backup，未重跑真实模型/长期双回路。
+
 ## 当前仍未收口的验证项
 
 - 真实浏览器 WebUI 自动化；
@@ -171,3 +178,5 @@
 - 真实高风险工具、动作确认和失败降级场景；
 - 真实模型长期校准、低置信度表达和未知/假设类型（最终 60 分钟仍有 1 次 semantic provider timeout）；
 - WebUI 中情绪/心境的纠正、导出、删除全流程可视化。
+- 模型配置的自动 schema 迁移、跨进程 provider 健康持久化和健康历史跨重启持久化；
+- configured provider 的真实长期 fallback 行为（当前仅离线/确定性验证）。
