@@ -1,8 +1,8 @@
 # `goal.md` 验收矩阵
 
 > 更新日期：2026-09-16
-> 当前基线：`main = b48a4ab`
-> 离线验证：`479 passed, 2 deselected`
+> 当前基线：`main = f70b104`
+> 离线验证：`480 passed, 2 deselected`
 > 真实模型：`live_openai` 此前 2 项通过
 > 真实双回路：最终 60 分钟 20 个事件、20/20 对话成功、`dialogue.failed=0`、backlog 峰值 1/最终 0、死信 0、worker 无错误、stop 前 health ready=true；`failure_classification` 仅 1 次 semantic provider timeout
 
@@ -21,7 +21,7 @@
 | COG-03 | 对话稳定使用情景、语义、关系、程序性、叙事记忆 | 部分满足 | Workspace/Retrieval 已接入；真实模型对情景、语义、关系、程序性、叙事记忆的长期使用质量仍受模型波动影响 |
 | COG-04 | 区分事实、推断、偏好、假设、冲突和未知 | 部分满足 | 已有事实/推断/偏好/未知/冲突；假设类型和通用表达仍不足 |
 | COG-05 | 线索、间隔、干扰、巩固、衰减、不确定表达 | 已满足 | 记忆生命周期测试通过；真实开放域表达仍受限 |
-| COG-06 | 认知结论可追溯到事件或系统先验 | 部分满足 | provenance graph 已覆盖 event/contribution/memory/relationship/narrative/emotion/mood/action request/decision/result/tool result；非事件证据（system prior/file fragment）节点的完整 provenance 仍未收口 |
+| COG-06 | 认知结论可追溯到事件或系统先验 | 已满足 | provenance graph 覆盖 event/contribution/memory/relationship/narrative/emotion/mood/action request/decision/result/tool result；非事件 EvidenceRef 生成 EVIDENCE 节点，并保留 source_kind/source_ref/locator/reliability |
 
 ## 9.2 数据正确性
 
@@ -95,8 +95,8 @@
 
 | 状态 | 数量 |
 | --- | ---: |
-| 已满足 | 36 |
-| 部分满足 | 8 |
+| 已满足 | 37 |
+| 部分满足 | 7 |
 | 未满足 | 0 |
 
 ## 真实双回路最终结果（2026-09-16）
@@ -157,11 +157,17 @@
 - 删除全部向量索引后可重建；记忆删除后索引自动失效并在查询时重建，不再返回被删记忆；
 - 覆盖：`test/test_vector_index.py`。
 
+## 阶段 43.4 非事件证据 provenance（2026-09-16）
+
+- 所有非事件 EvidenceRef（system prior、file fragment、tool result 等）生成 EVIDENCE 节点；
+- EVIDENCE 节点保留 source_kind、source_ref、locator、reliability，并从 contribution/memory/relationship/narrative/emotion/mood/action 建 DERIVED_FROM 边；
+- action decision 中无法解析为事件的 evidence UUID 生成 placeholder EVIDENCE 节点，不再丢边；
+- 覆盖：`test/test_provenance_graph.py`。
+
 ## 当前仍未收口的验证项
 
 - 真实浏览器 WebUI 自动化；
 - 超过 60 分钟的情绪衰减、心境累积、沉默负例和主观体验盲测；
-- 非事件证据 provenance（system prior/file fragment 等）；
 - 真实高风险工具、动作确认和失败降级场景；
 - 真实模型长期校准、低置信度表达和未知/假设类型（最终 60 分钟仍有 1 次 semantic provider timeout）；
 - WebUI 中情绪/心境的纠正、导出、删除全流程可视化。
