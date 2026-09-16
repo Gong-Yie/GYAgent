@@ -84,6 +84,9 @@ from self_cognition.infrastructure.persistence.file_layout import FileDataLayout
 from self_cognition.infrastructure.persistence.file_model_health_store import (
     FileModelHealthStore,
 )
+from self_cognition.infrastructure.persistence.file_health_history_store import (
+    FileHealthHistoryStore,
+)
 from self_cognition.infrastructure.persistence.file_memory_repository import (
     FileMemoryRepository,
 )
@@ -121,7 +124,7 @@ from self_cognition.runtime.scheduler import DualLoopScheduler
 from self_cognition.runtime.run_context import RunContext
 from self_cognition.workers.scheduler import SchedulerWorker
 from self_cognition.core.ids import new_correlation_id, new_run_id
-from self_cognition.runtime.health import HealthService
+from self_cognition.runtime.health import HealthHistory, HealthService
 from self_cognition.observability.metrics import MetricsRegistry
 from self_cognition.observability.tracing import TraceRecorder
 from self_cognition.infrastructure.llm.model_config import (
@@ -181,6 +184,7 @@ from self_cognition.tools.executor import (
     ToolRouterExecutor,
     WorkspaceShellExecutor,
     WorkspaceWebSearchExecutor,
+    WorkspaceWriteFileExecutor,
 )
 
 
@@ -328,6 +332,9 @@ def build_container(
     layout = FileDataLayout(resolved_settings.data_dir).ensure()
     model_health_store = FileModelHealthStore(
         layout.cache / "model_health.json"
+    )
+    health_history_store = FileHealthHistoryStore(
+        layout.cache / "health_history.json"
     )
     metrics = MetricsRegistry()
     traces = TraceRecorder()
@@ -596,11 +603,17 @@ def build_container(
         )
         shell = WorkspaceShellExecutor(policy)
         search = WorkspaceWebSearchExecutor(policy)
+        write_file = WorkspaceWriteFileExecutor(policy)
         tool_executor = ToolRouterExecutor(
-            {shell.tool_id: shell, search.tool_id: search}
+            {
+                shell.tool_id: shell,
+                search.tool_id: search,
+                write_file.tool_id: write_file,
+            }
         )
         capability_registry.register(shell.registration)
         capability_registry.register(search.registration)
+        capability_registry.register(write_file.registration)
     if isinstance(tool_executor, FileReadToolExecutor):
         capability_registry.register(tool_executor.registration)
     selected_planning_model = planning_model or RulePlanningModel()
@@ -722,6 +735,11 @@ def build_container(
             *((wake_worker,) if resolved_settings.worker_enabled else ()),
         ),
     )
+    health_history = HealthHistory(
+        max_entries=500,
+        on_record=health_history_store.save,
+    )
+    health_history.restore(health_history_store.load())
     health = HealthService(
         data_dir=layout.root,
         event_bus=event_bus,
@@ -730,6 +748,7 @@ def build_container(
         capability_registry=capability_registry,
         run_repository=run_repository,
         model_router=model_router,
+        history=health_history,
     )
     return ApplicationContainer(
         settings=resolved_settings,

@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from self_cognition.core.contributions import CognitionType
 from self_cognition.core.evidence import EvidenceRef
 from self_cognition.core.identity import (
     CapabilityExecutionStatus,
@@ -73,6 +74,13 @@ class RuleBasedDialogueModel:
             for item in workspace.items
             if any(ref in response.evidence_refs for ref in item.evidence_refs)
         )
+        if used and any(
+            item.cognition_type is CognitionType.HYPOTHESIS for item in used
+        ):
+            return DialogueResponse(
+                "以下内容属于假设，不是已确认事实：" + response.text,
+                response.evidence_refs,
+            )
         if used and any(item.confidence < 1.0 for item in used):
             confidence = min(item.confidence for item in used)
             return DialogueResponse(

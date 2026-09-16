@@ -155,6 +155,166 @@ class WorkspaceShellExecutor:
 
 
 @dataclass(slots=True)
+class WorkspaceWriteFileExecutor:
+    policy: ToolExecutionPolicy
+    tool_id: str = "workspace.write_file"
+
+    @property
+    def descriptor(self) -> ToolDescriptor:
+        return ToolDescriptor(
+            self.tool_id,
+            "Write workspace file",
+            "Write UTF-8 content to a file under an allowed workspace root.",
+            {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                    "overwrite": {"type": "boolean"},
+                },
+                "required": ["path", "content"],
+                "additionalProperties": False,
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "bytes_written": {"type": "integer"},
+                },
+                "required": ["path", "bytes_written"],
+                "additionalProperties": False,
+            },
+            (
+                ExpectedSideEffect(
+                    "file_write",
+                    "writes or overwrites a workspace file",
+                    False,
+                ),
+            ),
+        )
+
+    @property
+    def registration(self) -> CapabilityRegistration:
+        descriptor = self.descriptor
+        return CapabilityRegistration(
+            descriptor.tool_id,
+            descriptor.name,
+            CapabilityKind.TOOL,
+            CapabilityPermission.GRANTED,
+            description=descriptor.description,
+            input_schema=dict(descriptor.input_schema),
+            output_schema=dict(descriptor.output_schema),
+            expected_side_effects=descriptor.expected_side_effects,
+        )
+
+    def execute(
+        self,
+        action: ActionRequest,
+        decision: ActionDecision,
+        context: RunContext,
+    ) -> ActionResult:
+        if (
+            action.tool_id != self.tool_id
+            or decision.status is not ActionDecisionStatus.ALLOWED
+        ):
+            raise ContractValidationError("file write action is not allowed")
+        if decision.one_time_scope != action.action_id:
+            raise ContractValidationError(
+                "file write decision scope does not match action"
+            )
+        if context.cancelled:
+            return ActionResult(
+                uuid5(action.action_id, "tool-result"),
+                action.action_id,
+                action.owner,
+                ActionResultStatus.CANCELLED,
+                "file write cancelled",
+                None,
+                (),
+                context.clock.now(),
+            )
+
+        path_value = action.arguments.get("path")
+        content = action.arguments.get("content")
+        overwrite = action.arguments.get("overwrite", False)
+        if not isinstance(path_value, str) or not path_value.strip():
+            raise ContractValidationError("file path is required")
+        if not isinstance(content, str):
+            raise ContractValidationError("file content must be a string")
+        if type(overwrite) is not bool:
+            raise ContractValidationError("overwrite must be a boolean")
+
+        root = self.policy.resolved_roots[0]
+        try:
+            target = (root / path_value).resolve()
+            target.relative_to(root)
+        except (OSError, ValueError):
+            return self._failed(
+                action,
+                context,
+                "file target is outside the allowed workspace",
+                "PathOutsideWorkspace",
+            )
+        if target.exists() and not overwrite:
+            return self._failed(
+                action,
+                context,
+                "file already exists and overwrite is disabled",
+                "FileExists",
+            )
+        encoded = content.encode("utf-8")
+        if len(encoded) > self.policy.max_output_bytes:
+            return self._failed(
+                action,
+                context,
+                "file content exceeds the output limit",
+                "ContentTooLarge",
+            )
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+        except OSError as error:
+            return self._failed(
+                action,
+                context,
+                "file write failed",
+                type(error).__name__,
+            )
+        return ActionResult(
+            uuid5(action.action_id, "tool-result"),
+            action.action_id,
+            action.owner,
+            ActionResultStatus.SUCCEEDED,
+            "workspace file written",
+            {
+                "path": str(target.relative_to(root)),
+                "bytes_written": len(encoded),
+            },
+            (),
+            context.clock.now(),
+        )
+
+    @staticmethod
+    def _failed(
+        action: ActionRequest,
+        context: RunContext,
+        summary: str,
+        error_type: str,
+    ) -> ActionResult:
+        return ActionResult(
+            uuid5(action.action_id, "tool-result"),
+            action.action_id,
+            action.owner,
+            ActionResultStatus.FAILED,
+            summary,
+            None,
+            (),
+            context.clock.now(),
+            error_type,
+        )
+
+
+@dataclass(slots=True)
 class WorkspaceWebSearchExecutor:
     policy: ToolExecutionPolicy
     tool_id: str = "workspace.web_search"

@@ -10,6 +10,7 @@ import pytest
 
 from self_cognition.application.results import ProcessEventStatus
 from self_cognition.bootstrap import ApplicationContainer, build_container
+from self_cognition.core.contributions import CognitionType
 from self_cognition.core.deletions import DeletionSelector, DeletionStatus
 from self_cognition.core.dialogue import (
     AssistantMessagePayload,
@@ -665,3 +666,46 @@ def test_input_restatement_is_not_invalidated_by_low_confidence_item_sharing_inp
     )
 
     assert validate_grounding(draft, packet) == (input_ref,)
+
+def test_hypothesis_evidence_cannot_support_a_certain_claim() -> None:
+    request = message("我可能明天会去公园")
+    input_ref = EvidenceRef.for_event(request)
+    derived_ref = EvidenceRef.for_event_id(uuid4(), "alice")
+    item = WorkspaceItem(
+        target_field="episodic.experience.tomorrow",
+        content="明天可能去公园",
+        evidence_refs=(derived_ref,),
+        confidence=1.0,
+        selection_reason="hypothesis",
+        source=RetrievalSource.STATE,
+        cognition_type=CognitionType.HYPOTHESIS,
+    )
+    packet = WorkspacePacket(
+        subject_id="alice",
+        state_version=0,
+        items=(item,),
+        subject=subject("alice"),
+        input_evidence=input_ref,
+    )
+    draft = DialogueDraft(
+        "我可能明天会去公园。",
+        (
+            DialogueClaim(
+                "我可能明天会去公园。",
+                (derived_ref.evidence_id,),
+                ClaimStance.SUPPORTED,
+            ),
+        ),
+        DisclosureDecision(
+            "withhold",
+            DisclosureScope.PRIVATE,
+            "no disclosure needed",
+            (),
+        ),
+    )
+
+    with pytest.raises(
+        ModelOutputError,
+        match="uncertain evidence cannot support a certain claim",
+    ):
+        validate_grounding(draft, packet)

@@ -17,6 +17,7 @@ class ContributionOperation(str, Enum):
 class CognitionType(str, Enum):
     FACT = "fact"
     INFERENCE = "inference"
+    HYPOTHESIS = "hypothesis"
     PREFERENCE = "preference"
     GOAL = "goal"
     AFFECT = "affect"

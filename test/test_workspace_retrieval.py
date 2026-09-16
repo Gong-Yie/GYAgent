@@ -39,13 +39,16 @@ NOW = datetime(2026, 9, 2, 12, tzinfo=timezone.utc)
 SUBJECT = SubjectScope.legacy_user("user-1")
 
 
-def make_state() -> SubjectState:
+def make_state(
+    *,
+    cognition_type: CognitionType = CognitionType.FACT,
+) -> SubjectState:
     contribution = CognitiveContribution(
         contribution_id=UUID(int=1),
         target=SUBJECT,
         target_field="episodic.experience.park",
         operation=ContributionOperation.SET,
-        cognition_type=CognitionType.FACT,
+        cognition_type=cognition_type,
         value="今天我去了公园",
         confidence=0.9,
         evidence_refs=(EvidenceRef.for_event_id(UUID(int=101), SUBJECT),),
@@ -271,3 +274,15 @@ def test_each_packet_receives_fresh_fixed_context_and_enforces_scope(
                 task="公园",
             ),
         )
+
+def test_workspace_item_exposes_hypothesis_cognition_type() -> None:
+    state = make_state(cognition_type=CognitionType.HYPOTHESIS)
+
+    packet = WorkspaceBuilder().build("我经历过什么？", state, as_of=NOW)
+
+    item = next(
+        item
+        for item in packet.items
+        if item.target_field == "episodic.experience.park"
+    )
+    assert item.cognition_type is CognitionType.HYPOTHESIS

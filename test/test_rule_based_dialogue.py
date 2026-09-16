@@ -5,6 +5,7 @@ from self_cognition.application.process_event import ProcessEventService
 from self_cognition.cognition.semantic.preference_extractor import (
     PreferenceExtractor,
 )
+from self_cognition.core.contributions import CognitionType
 from self_cognition.core.events import Event
 from self_cognition.core.evidence import EvidenceRef
 from self_cognition.core.workspace import Workspace, WorkspaceBuilder, WorkspaceItem
@@ -95,3 +96,25 @@ def test_does_not_invent_a_preference_from_an_unrelated_item():
     assert response.text == "我还不知道你喜欢什么时候学习。"
     assert "小明" not in response.text
     assert response.evidence_refs == ()
+
+def test_hypothesis_is_expressed_as_uncertain_not_fact():
+    evidence = EvidenceRef.for_event_id(uuid4(), "user-1")
+    workspace = Workspace(
+        subject_id="user-1",
+        state_version=1,
+        items=(
+            WorkspaceItem(
+                target_field="preferences.study_time",
+                content="早上",
+                evidence_refs=(evidence,),
+                confidence=1.0,
+                selection_reason="test hypothesis",
+                cognition_type=CognitionType.HYPOTHESIS,
+            ),
+        ),
+    )
+
+    response = RuleBasedDialogueModel().respond(QUESTION, workspace)
+
+    assert response.text == "以下内容属于假设，不是已确认事实：你喜欢早上学习。"
+    assert response.evidence_refs == (evidence,)

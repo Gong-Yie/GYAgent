@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,6 +39,42 @@ class HealthReport:
             ],
         }
 
+    @classmethod
+    def from_dict(cls, data: object) -> "HealthReport":
+        if not isinstance(data, dict):
+            raise ValueError("health report must be an object")
+        ready = data.get("ready")
+        if type(ready) is not bool:
+            raise ValueError("health report ready must be a boolean")
+        raw_components = data.get("components")
+        if not isinstance(raw_components, list):
+            raise ValueError("health report components must be an array")
+        components: list[ComponentHealth] = []
+        for raw in raw_components:
+            if not isinstance(raw, dict):
+                raise ValueError("health component must be an object")
+            name = raw.get("name")
+            status = raw.get("status")
+            detail = raw.get("detail")
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError("health component name must be non-blank")
+            if not isinstance(status, str) or not status.strip():
+                raise ValueError("health component status must be non-blank")
+            if detail is not None and not isinstance(detail, str):
+                raise ValueError("health component detail must be string or null")
+            raw_details = raw.get("details", ())
+            if not isinstance(raw_details, list):
+                raise ValueError("health component details must be an array")
+            details: list[dict[str, object]] = []
+            for value in raw_details:
+                if not isinstance(value, dict):
+                    raise ValueError("health component detail must be an object")
+                details.append(dict(value))
+            components.append(
+                ComponentHealth(name, status, detail, tuple(details))
+            )
+        return cls(ready, tuple(components))
+
 
 @dataclass(frozen=True, slots=True)
 class HealthHistoryEntry:
@@ -67,14 +104,46 @@ class HealthHistoryEntry:
             "modules": modules,
         }
 
+    def to_storage_dict(self) -> dict[str, object]:
+        return {
+            "checked_at": self.checked_at.isoformat(),
+            "report": self.report.as_dict(),
+        }
+
+    @classmethod
+    def from_storage_dict(cls, data: object) -> "HealthHistoryEntry":
+        if not isinstance(data, dict):
+            raise ValueError("health history entry must be an object")
+        raw_checked_at = data.get("checked_at")
+        if not isinstance(raw_checked_at, str) or not raw_checked_at.strip():
+            raise ValueError("health history checked_at must be non-blank")
+        try:
+            checked_at = datetime.fromisoformat(raw_checked_at)
+        except ValueError as error:
+            raise ValueError("health history checked_at is invalid") from error
+        if checked_at.tzinfo is None or checked_at.utcoffset() is None:
+            checked_at = checked_at.replace(tzinfo=timezone.utc)
+        return cls(
+            checked_at,
+            HealthReport.from_dict(data.get("report")),
+        )
+
 
 class HealthHistory:
     """Bounded in-process history of health snapshots for UI diagnostics."""
 
-    def __init__(self, *, max_entries: int = 500) -> None:
+    def __init__(
+        self,
+        *,
+        max_entries: int = 500,
+        on_record: (
+            Callable[[tuple[dict[str, object], ...]], None] | None
+        ) = None,
+    ) -> None:
         if max_entries < 1:
             raise ValueError("health history max entries must be positive")
         self._entries: deque[HealthHistoryEntry] = deque(maxlen=max_entries)
+        self._on_record = on_record
 
     def record(
         self,
@@ -89,7 +158,23 @@ class HealthHistory:
             report=report,
         )
         self._entries.append(entry)
+        if self._on_record is not None:
+            try:
+                self._on_record(self.storage_snapshots())
+            except Exception:
+                pass
         return entry
+
+    def restore(self, snapshots: Iterable[dict[str, object]]) -> None:
+        for snapshot in snapshots:
+            try:
+                entry = HealthHistoryEntry.from_storage_dict(snapshot)
+            except (TypeError, ValueError):
+                continue
+            self._entries.append(entry)
+
+    def storage_snapshots(self) -> tuple[dict[str, object], ...]:
+        return tuple(entry.to_storage_dict() for entry in self._entries)
 
     def snapshots(self, *, limit: int = 50) -> tuple[HealthHistoryEntry, ...]:
         if limit < 1:

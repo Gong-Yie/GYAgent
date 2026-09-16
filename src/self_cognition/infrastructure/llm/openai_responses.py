@@ -185,10 +185,12 @@ class OpenAIResponsesCognitionModel:
             )
 
         instructions = (
-            "Extract only explicit user cognition facts. Return no candidate "
-            "when unsupported. Classify every candidate with cognition_type. "
-            "Use the canonical target field preferences.study_time for study-time "
-            "preferences; do not invent aliases or translate field names. "
+            "Extract explicit user cognition facts, preferences, goals, limitations, "
+            "and clearly tentative hypotheses. Return no candidate when unsupported. "
+            "Use cognition_type hypothesis only for tentative possibilities or guesses; "
+            "never present a hypothesis as a fact. Classify every candidate with "
+            "cognition_type. Use the canonical target field preferences.study_time for "
+            "study-time preferences; do not invent aliases or translate field names. "
             "Every candidate must cite the supplied event ID. Return only one "
             "JSON object that conforms to the provided schema. Do not return or "
             "repeat the schema definition."

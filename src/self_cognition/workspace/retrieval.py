@@ -223,6 +223,7 @@ def _candidate_from_state(
         task_relevance=relevance,
         estimated_tokens=estimate_tokens(content),
         reason="authoritative state matched task fields, time, or full text",
+        cognition_type=atom.cognition_type,
     )
 
 

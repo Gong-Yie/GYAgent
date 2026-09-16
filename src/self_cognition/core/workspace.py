@@ -15,6 +15,7 @@ from self_cognition.core.affect import (
     decay_emotion,
     decay_mood,
 )
+from self_cognition.core.contributions import CognitionType
 from self_cognition.core.errors import ContractValidationError
 from self_cognition.core.evidence import EvidenceRef
 from self_cognition.core.indexes import WorkspaceIndex, text_terms
@@ -205,6 +206,7 @@ class RetrievalCandidate:
     task_relevance: float
     estimated_tokens: int
     reason: str
+    cognition_type: CognitionType | None = None
 
     @property
     def score(self) -> float:
@@ -250,6 +252,7 @@ class WorkspaceItem:
     subject: SubjectScope | None = None
     state_version: int | None = None
     data_scope: DataScope | None = None
+    cognition_type: CognitionType | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -433,6 +436,7 @@ class WorkspaceBuilder:
                 owner,
                 state.version,
                 data_scope,
+                candidate.cognition_type,
             )
             proposal = replace(packet, items=(*packet.items, item))
             cost = estimate_tokens(workspace_model_context(proposal))
@@ -647,6 +651,7 @@ def _select(
                     source_ref=candidate.source_ref,
                     score=candidate.score,
                     estimated_tokens=candidate.estimated_tokens,
+                    cognition_type=candidate.cognition_type,
                 )
             )
         decisions.append(
@@ -745,6 +750,7 @@ def _retrieve_state(
                     task_relevance=1.0,
                     estimated_tokens=estimate_tokens(content),
                     reason="question maps to this state field",
+                    cognition_type=entry.cognition_type,
                 )
             )
     candidates.extend(conflict_candidates(query, state))

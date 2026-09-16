@@ -1,3 +1,4 @@
+from self_cognition.core.contributions import CognitionType
 from self_cognition.core.dialogue import ClaimStance, DialogueDraft
 from self_cognition.core.errors import ModelOutputError
 from self_cognition.core.evidence import EvidenceRef, EvidenceSourceKind
@@ -31,7 +32,11 @@ def validate_grounding(
                     "model assertions cannot independently establish facts"
                 )
             if any(
-                (item.confidence < 1.0 or item.source is RetrievalSource.CONFLICT)
+                (
+                    item.confidence < 1.0
+                    or item.source is RetrievalSource.CONFLICT
+                    or item.cognition_type is CognitionType.HYPOTHESIS
+                )
                 and any(
                     ref.evidence_id in claim.evidence_ids
                     and ref.evidence_id != input_evidence_id

@@ -149,3 +149,33 @@ def test_http_health_failures_returns_recent_failure_chain(
     assert matched["error_type"] == "ModelTimeoutError"
     assert matched["termination_reason"] == "provider timeout"
     assert matched["input_event_ids"] == [str(record.input_event_ids[0])]
+
+def test_health_history_restores_across_container_restart(
+    tmp_path: Path,
+) -> None:
+    settings = ApplicationSettings(data_dir=tmp_path, worker_enabled=False)
+    first = build_container(
+        tmp_path,
+        settings=settings,
+        dotenv_path=tmp_path / "missing.env",
+    )
+    first.model_router.mark_degraded(
+        "dialogue-default",
+        "dialogue",
+        "ModelTimeoutError",
+    )
+    first.health.check()
+    before = first.health.history(limit=10)
+    assert before
+    assert before[-1]["models"]["status"] == "degraded"
+
+    second = build_container(
+        tmp_path,
+        settings=ApplicationSettings(data_dir=tmp_path, worker_enabled=False),
+        dotenv_path=tmp_path / "missing.env",
+    )
+
+    restored = second.health.history(limit=10)
+    assert restored
+    assert restored[-1]["checked_at"] == before[-1]["checked_at"]
+    assert restored[-1]["models"]["status"] == "degraded"
