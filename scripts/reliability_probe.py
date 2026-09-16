@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import sys
+import time
 from datetime import timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -42,6 +44,42 @@ def _container(data_dir: Path, dotenv_path: Path):
     )
 
 
+def _subject_shard_filter(shard_index: int, shard_count: int):
+    if shard_count < 1 or not 0 <= shard_index < shard_count:
+        raise ValueError("invalid shard configuration")
+
+    def matches(subject: SubjectScope) -> bool:
+        key = (
+            f"{subject.mind.mind_id}:"
+            f"{subject.subject.kind.value}:"
+            f"{subject.subject.subject_id}"
+        ).encode("utf-8")
+        digest = int(hashlib.sha256(key).hexdigest(), 16)
+        return digest % shard_count == shard_index
+
+    return matches
+
+
+def _drain(args) -> int:
+    container = _container(args.data_dir, args.dotenv)
+    subject_filter = _subject_shard_filter(args.shard_index, args.shard_count)
+    deadline = time.monotonic() + args.max_seconds
+    idle_since = time.monotonic()
+    while time.monotonic() < deadline:
+        container.event_bus.drain(subject_filter=subject_filter)
+        backlog = tuple(
+            entry
+            for entry in container.event_bus.backlog()
+            if subject_filter(entry.subject)
+        )
+        if backlog:
+            idle_since = time.monotonic()
+        elif time.monotonic() - idle_since >= args.idle_seconds:
+            return 0
+        time.sleep(args.poll_seconds)
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Reliability probe for force-kill recovery")
     subparsers = parser.add_subparsers(dest="mode", required=True)
@@ -54,6 +92,15 @@ def main(argv: list[str] | None = None) -> int:
     running.add_argument("--data-dir", type=Path, required=True)
     running.add_argument("--dotenv", type=Path, default=PROJECT_ROOT / ".env")
     running.add_argument("--run-id", type=UUID, required=True)
+
+    drain = subparsers.add_parser("drain")
+    drain.add_argument("--data-dir", type=Path, required=True)
+    drain.add_argument("--dotenv", type=Path, default=PROJECT_ROOT / ".env")
+    drain.add_argument("--shard-index", type=int, required=True)
+    drain.add_argument("--shard-count", type=int, required=True)
+    drain.add_argument("--idle-seconds", type=float, default=0.5)
+    drain.add_argument("--max-seconds", type=float, default=30.0)
+    drain.add_argument("--poll-seconds", type=float, default=0.01)
 
     args = parser.parse_args(argv)
 
@@ -83,6 +130,9 @@ def main(argv: list[str] | None = None) -> int:
             wake_reason="reliability-probe",
         )
         os._exit(99)
+
+    if args.mode == "drain":
+        return _drain(args)
 
     return 0
 

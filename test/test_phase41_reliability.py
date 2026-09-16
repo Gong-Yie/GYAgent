@@ -232,3 +232,86 @@ def test_affect_and_proactive_state_survive_restart(tmp_path: Path) -> None:
     assert affect_after == affect_before
     assert active_after == active_before
     assert mailbox_after == mailbox_before
+
+def test_multi_process_workers_shard_subjects_without_duplicate_processing(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    dotenv = tmp_path / "missing.env"
+    settings = ApplicationSettings(data_dir=data_dir, worker_enabled=False)
+    producer = build_container(data_dir, settings=settings, dotenv_path=dotenv)
+    subjects = [
+        SubjectScope.legacy_user(f"mp-{index}")
+        for index in range(3)
+    ]
+
+    for round_index in range(3):
+        for subject in subjects:
+            context = RunContext(
+                uuid4(),
+                uuid4(),
+                SYSTEM_CLOCK.now() + timedelta(minutes=5),
+            )
+            text = "我喜欢晚上学习" if round_index != 1 else "我喜欢早上学习"
+            event = EventEnvelope.user_message(
+                subject,
+                text,
+                run_id=context.run_id,
+                correlation_id=context.correlation_id,
+            )
+            producer.event_bus.publish(event, context)
+
+    processes: list[subprocess.Popen[str]] = []
+    try:
+        for shard_index in range(3):
+            processes.append(
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        str(PROBE),
+                        "drain",
+                        "--data-dir",
+                        str(data_dir),
+                        "--dotenv",
+                        str(dotenv),
+                        "--shard-index",
+                        str(shard_index),
+                        "--shard-count",
+                        "3",
+                        "--idle-seconds",
+                        "0.5",
+                        "--max-seconds",
+                        "20",
+                    ],
+                    cwd=ROOT,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env={**os.environ, "PYTHONPATH": "src"},
+                )
+            )
+
+        for process in processes:
+            _, stderr = process.communicate(timeout=25)
+            assert process.returncode == 0, stderr
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+
+    restarted = build_container(data_dir, settings=settings, dotenv_path=dotenv)
+    for subject in subjects:
+        state = restarted.state_repository.load(subject)
+        assert state is not None
+        assert state.version == 3
+
+    assert restarted.event_bus.backlog() == ()
+    assert restarted.event_bus.dead_letters() == ()
+
+    reduced = [
+        event
+        for event in restarted.event_store.read_all()
+        if event.event_type == "state.reduced" and event.subject in subjects
+    ]
+    assert len(reduced) == 9

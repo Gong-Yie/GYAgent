@@ -7,11 +7,31 @@ from time import perf_counter
 from typing import Iterator, Mapping
 
 
+def _percentile(values: tuple[float, ...], q: float) -> float | None:
+    if not 0.0 <= q <= 1.0:
+        raise ValueError("percentile must be between 0 and 1")
+    if not values:
+        return None
+    ordered = sorted(float(value) for value in values)
+    if len(ordered) == 1:
+        return ordered[0]
+    position = q * (len(ordered) - 1)
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    if lower == upper:
+        return ordered[lower]
+    fraction = position - lower
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
+
+
 @dataclass(frozen=True, slots=True)
 class MetricSnapshot:
     counters: Mapping[str, int]
     gauges: Mapping[str, float]
     timings: Mapping[str, tuple[float, ...]]
+
+    def percentile(self, name: str, q: float) -> float | None:
+        return _percentile(self.timings.get(name, ()), q)
 
 
 class MetricsRegistry:
@@ -49,6 +69,11 @@ class MetricsRegistry:
             yield
         finally:
             self.observe(name, perf_counter() - started)
+
+    def percentile(self, name: str, q: float) -> float | None:
+        with self._lock:
+            values = tuple(self._timings.get(name, ()))
+        return _percentile(values, q)
 
     def snapshot(self) -> MetricSnapshot:
         with self._lock:

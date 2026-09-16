@@ -16,6 +16,7 @@ from self_cognition.infrastructure.persistence.serialization import (
     event_to_json,
 )
 from self_cognition.infrastructure.persistence.atomic_io import atomic_write_text
+from self_cognition.infrastructure.persistence.file_lock import BlockingFileLock
 
 
 class FileEventStore:
@@ -25,6 +26,7 @@ class FileEventStore:
         tombstone_path: str | Path | None = None,
     ) -> None:
         self._path = Path(path)
+        self._append_lock_path = self._path.parent / f"{self._path.name}.lock"
         self._tombstone_path = Path(
             tombstone_path or self._path.parent / "event_tombstones.jsonl"
         )
@@ -35,39 +37,28 @@ class FileEventStore:
 
     def append(self, event: EventEnvelope) -> None:
         with self._lock:
-            if (
-                event.event_id in self._event_ids
-                or event.event_id in self._tombstones
-                or bool(
-                    (
-                        action_dependency_ids(event)
-                        | dialogue_dependency_ids(event)
-                        | planning_dependency_ids(event)
-                        | proactive_dependency_ids(event)
-                    )
-                    & self._tombstones
-                )
-            ):
+            if self._is_duplicate_unlocked(event):
                 return
-
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            record = event_to_json(event) + "\n"
-            with self._path.open("a", encoding="utf-8", newline="\n") as handle:
-                handle.write(record)
-                handle.flush()
-                os.fsync(handle.fileno())
-
-            self._events.append(event)
-            self._event_ids.add(event.event_id)
+            self._append_unlocked(event)
 
     def append_many(self, events: tuple[EventEnvelope, ...]) -> None:
         with self._lock:
             pending = tuple(
-                event
-                for event in events
-                if event.event_id not in self._event_ids
-                and event.event_id not in self._tombstones
-                and not (
+                event for event in events if not self._is_duplicate_unlocked(event)
+            )
+            if not pending:
+                return
+            if len({event.event_id for event in pending}) != len(pending):
+                raise ValueError("event batch contains duplicate IDs")
+            for event in pending:
+                self._append_unlocked(event)
+
+    def _is_duplicate_unlocked(self, event: EventEnvelope) -> bool:
+        return (
+            event.event_id in self._event_ids
+            or event.event_id in self._tombstones
+            or bool(
+                (
                     action_dependency_ids(event)
                     | dialogue_dependency_ids(event)
                     | planning_dependency_ids(event)
@@ -75,18 +66,18 @@ class FileEventStore:
                 )
                 & self._tombstones
             )
-            if not pending:
-                return
-            if len({event.event_id for event in pending}) != len(pending):
-                raise ValueError("event batch contains duplicate IDs")
+        )
 
-            records = (*self._events, *pending)
-            atomic_write_text(
-                self._path,
-                "".join(event_to_json(event) + "\n" for event in records),
-            )
-            self._events.extend(pending)
-            self._event_ids.update(event.event_id for event in pending)
+    def _append_unlocked(self, event: EventEnvelope) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        record = event_to_json(event) + "\n"
+        with BlockingFileLock(self._append_lock_path):
+            with self._path.open("a", encoding="utf-8", newline="\n") as handle:
+                handle.write(record)
+                handle.flush()
+                os.fsync(handle.fileno())
+        self._events.append(event)
+        self._event_ids.add(event.event_id)
 
     def read_by_subject(
         self,
@@ -139,20 +130,21 @@ class FileEventStore:
 
         events: list[EventEnvelope] = []
         try:
-            with self._path.open("r", encoding="utf-8") as handle:
-                for line_number, line in enumerate(handle, start=1):
-                    if not line.strip():
-                        raise MalformedSerializedDataError(
-                            f"blank event record at line {line_number}"
-                        )
-                    try:
-                        event = event_from_json(line)
-                        if event.event_id not in self._tombstones:
-                            events.append(event)
-                    except MalformedSerializedDataError as error:
-                        raise MalformedSerializedDataError(
-                            f"invalid event record at line {line_number}"
-                        ) from error
+            with BlockingFileLock(self._append_lock_path):
+                with self._path.open("r", encoding="utf-8") as handle:
+                    for line_number, line in enumerate(handle, start=1):
+                        if not line.strip():
+                            raise MalformedSerializedDataError(
+                                f"blank event record at line {line_number}"
+                            )
+                        try:
+                            event = event_from_json(line)
+                            if event.event_id not in self._tombstones:
+                                events.append(event)
+                        except MalformedSerializedDataError as error:
+                            raise MalformedSerializedDataError(
+                                f"invalid event record at line {line_number}"
+                            ) from error
         except UnicodeError as error:
             raise MalformedSerializedDataError(
                 "event log is not valid UTF-8"

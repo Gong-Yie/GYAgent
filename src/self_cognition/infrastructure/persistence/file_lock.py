@@ -1,4 +1,5 @@
 import os
+import time
 from pathlib import Path
 from uuid import uuid4
 
@@ -40,10 +41,19 @@ class FileLock:
     def release(self) -> None:
         if self._token is None:
             return
+        owner: str | None = None
+        descriptor: int | None = None
         try:
-            owner = self._path.read_text(encoding="ascii")
-        except FileNotFoundError:
-            owner = None
+            descriptor = os.open(self._path, os.O_RDONLY)
+        except OSError:
+            descriptor = None
+        if descriptor is not None:
+            try:
+                owner = os.read(descriptor, 4096).decode("ascii")
+            except OSError:
+                owner = None
+            finally:
+                os.close(descriptor)
         if owner == self._token:
             self._path.unlink(missing_ok=True)
         self._token = None
@@ -54,3 +64,35 @@ class FileLock:
 
     def __exit__(self, exc_type, exc, traceback) -> None:
         self.release()
+
+
+class BlockingFileLock(FileLock):
+    """FileLock with bounded waiting for short cross-process critical sections."""
+
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        timeout_seconds: float = 10.0,
+        poll_interval_seconds: float = 0.01,
+    ) -> None:
+        super().__init__(path)
+        if timeout_seconds <= 0:
+            raise ValueError("lock timeout must be positive")
+        if poll_interval_seconds <= 0:
+            raise ValueError("lock poll interval must be positive")
+        self._timeout_seconds = timeout_seconds
+        self._poll_interval_seconds = poll_interval_seconds
+
+    def acquire(self) -> None:
+        if self._token is not None:
+            return
+        deadline = time.monotonic() + self._timeout_seconds
+        while True:
+            try:
+                super().acquire()
+                return
+            except FileLockUnavailableError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(self._poll_interval_seconds)

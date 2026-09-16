@@ -105,8 +105,14 @@ class SingleMachineEventBus:
     def drain(
         self,
         clock: Clock = SYSTEM_CLOCK,
+        *,
+        subject_filter: Callable[[SubjectScope], bool] | None = None,
     ) -> tuple[ProcessEventResult, ...]:
-        entries = self._journal.claimable_outbox(clock.now())
+        entries = tuple(
+            entry
+            for entry in self._journal.claimable_outbox(clock.now())
+            if subject_filter is None or subject_filter(entry.subject)
+        )
         if self._metrics is not None:
             self._metrics.set_gauge("queue.backlog", float(len(entries)))
         if not entries:

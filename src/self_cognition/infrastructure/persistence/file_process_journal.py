@@ -18,7 +18,7 @@ from self_cognition.core.scopes import (
     SubjectScope,
 )
 from self_cognition.infrastructure.persistence.atomic_io import atomic_write_text
-from self_cognition.infrastructure.persistence.file_lock import FileLock
+from self_cognition.infrastructure.persistence.file_lock import BlockingFileLock
 
 
 class FileProcessJournal:
@@ -67,7 +67,7 @@ class FileProcessJournal:
         run_id: UUID,
         enqueued_at: datetime,
     ) -> ProcessingRecord:
-        with FileLock(self._lock_path(event.event_id)):
+        with BlockingFileLock(self._lock_path(event.event_id)):
             current = self.get(event.event_id)
             if current is not None and current.status in (
                 ProcessingStatus.COMPLETED,
@@ -96,7 +96,7 @@ class FileProcessJournal:
     ) -> ProcessingRecord | None:
         if lease_timeout <= timedelta(0):
             raise ValueError("lease_timeout must be positive")
-        with FileLock(self._lock_path(event_id)):
+        with BlockingFileLock(self._lock_path(event_id)):
             current = self._require_record(event_id)
             if current.status in (
                 ProcessingStatus.COMPLETED,
@@ -137,7 +137,7 @@ class FileProcessJournal:
         error_code: str,
         error_type: str,
     ) -> ProcessingRecord:
-        with FileLock(self._lock_path(event_id)):
+        with BlockingFileLock(self._lock_path(event_id)):
             current = self._require_record(event_id)
             if current.status is not ProcessingStatus.PROCESSING:
                 return current
@@ -161,7 +161,7 @@ class FileProcessJournal:
         run_id: UUID,
         updated_at: datetime,
     ) -> ProcessingRecord:
-        with FileLock(self._lock_path(event_id)):
+        with BlockingFileLock(self._lock_path(event_id)):
             current = self._require_record(event_id)
             if current.status is ProcessingStatus.COMPLETED:
                 self._acknowledge_unlocked(event_id, updated_at)
@@ -190,7 +190,7 @@ class FileProcessJournal:
         error_type: str,
         dead_letter: bool = True,
     ) -> ProcessingRecord:
-        with FileLock(self._lock_path(event_id)):
+        with BlockingFileLock(self._lock_path(event_id)):
             current = self._require_record(event_id)
             if current.status is ProcessingStatus.COMPLETED:
                 return current
@@ -257,7 +257,7 @@ class FileProcessJournal:
             raise MalformedSerializedDataError(
                 "recoverable event must contain a run_id"
             )
-        with FileLock(self._lock_path(event.event_id)):
+        with BlockingFileLock(self._lock_path(event.event_id)):
             current = self.get(event.event_id)
             if status is ProcessingStatus.COMPLETED:
                 record = ProcessingRecord(
