@@ -1,8 +1,8 @@
 # `goal.md` 验收矩阵
 
 > 更新日期：2026-09-16
-> 当前基线：`main = ca509a3`
-> 离线验证：`477 passed, 2 deselected`
+> 当前基线：`main = 5a075d4`
+> 离线验证：`478 passed, 2 deselected`
 > 真实模型：`live_openai` 此前 2 项通过
 > 真实双回路：最终 60 分钟 20 个事件、20/20 对话成功、`dialogue.failed=0`、backlog 峰值 1/最终 0、死信 0、worker 无错误、stop 前 health ready=true；`failure_classification` 仅 1 次 semantic provider timeout
 
@@ -21,7 +21,7 @@
 | COG-03 | 对话稳定使用情景、语义、关系、程序性、叙事记忆 | 部分满足 | Workspace/Retrieval 已接入；真实模型对情景、语义、关系、程序性、叙事记忆的长期使用质量仍受模型波动影响 |
 | COG-04 | 区分事实、推断、偏好、假设、冲突和未知 | 部分满足 | 已有事实/推断/偏好/未知/冲突；假设类型和通用表达仍不足 |
 | COG-05 | 线索、间隔、干扰、巩固、衰减、不确定表达 | 已满足 | 记忆生命周期测试通过；真实开放域表达仍受限 |
-| COG-06 | 认知结论可追溯到事件或系统先验 | 部分满足 | 已支持 event/contribution/memory/emotion/mood 的 provenance graph 重建与 source_events 追溯；relationship/narrative/action 与完整跨域图仍未接入 |
+| COG-06 | 认知结论可追溯到事件或系统先验 | 部分满足 | provenance graph 已覆盖 event/contribution/memory/relationship/narrative/emotion/mood/action request/decision/result/tool result；非事件证据（system prior/file fragment）节点的完整 provenance 仍未收口 |
 
 ## 9.2 数据正确性
 
@@ -31,7 +31,7 @@
 | DATA-02 | 事件序列重放后得到业务等价状态 | 已满足 | Replay 测试通过 |
 | DATA-03 | 跨 mind 读取被拒绝，心智内归属清晰 | 已满足 | 隔离、取消、主体归属测试通过 |
 | DATA-04 | 状态、记忆和关系更新保留历史证据 | 已满足 | 版本化状态和记忆版本测试通过 |
-| DATA-05 | 所有索引可删除并重建 | 部分满足 | 文件 provenance 图索引可删除后从事件与记忆重建；字段/时间索引可重建；向量索引仍未接入 |
+| DATA-05 | 所有索引可删除并重建 | 部分满足 | provenance 图索引具备 manifest、rebuild_all、delete_all、verify 完整生命周期；字段/时间索引可重建；向量索引仍未接入 |
 | DATA-06 | 删除清除权威、缓存、导出、派生索引 | 已满足 | 删除传播到情绪、心境、主动意图和状态重放链路 |
 
 ## 9.3 对话与行动
@@ -143,11 +143,18 @@
 - 集成测试：事件、贡献、记忆、快速情绪、心境均可入图，记忆/情绪链可回到源事件；
 - 覆盖：`test/test_provenance_graph.py`。
 
+## 阶段 43.2 provenance 生命周期（2026-09-16）
+
+- relationship / narrative / action request / action decision / action result / tool result 节点入图；
+- provenance store 维护 manifest，支持 `rebuild_all`、`delete_all`、`verify`，并清理 stale graph；
+- 修复多进程 state 读写竞争：`FileStateRepository` 增加按 subject 跨进程锁，避免 PermissionError 重试造成重复 `state.reduced`；
+- 覆盖：`test/test_provenance_graph.py` 与 `test/test_phase41_reliability.py` 多进程用例。
+
 ## 当前仍未收口的验证项
 
 - 真实浏览器 WebUI 自动化；
 - 超过 60 分钟的情绪衰减、心境累积、沉默负例和主观体验盲测；
-- 向量索引、完整 relationship/narrative/action provenance graph；
+- 向量索引、非事件证据 provenance（system prior/file fragment 等）；
 - 真实高风险工具、动作确认和失败降级场景；
 - 真实模型长期校准、低置信度表达和未知/假设类型（最终 60 分钟仍有 1 次 semantic provider timeout）；
 - WebUI 中情绪/心境的纠正、导出、删除全流程可视化。
