@@ -8,6 +8,7 @@ from typing import Mapping
 
 
 SETTINGS_SCHEMA_VERSION = 1
+MAX_MODEL_OUTPUT_TOKENS = 393216
 _KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -42,6 +43,16 @@ class ApplicationSettings:
             raise ValueError("cognition max output tokens must be positive")
         if self.dialogue_max_output_tokens < 1:
             raise ValueError("dialogue max output tokens must be positive")
+        if self.cognition_max_output_tokens > MAX_MODEL_OUTPUT_TOKENS:
+            raise ValueError(
+                "cognition max output tokens must not exceed "
+                f"{MAX_MODEL_OUTPUT_TOKENS}"
+            )
+        if self.dialogue_max_output_tokens > MAX_MODEL_OUTPUT_TOKENS:
+            raise ValueError(
+                "dialogue max output tokens must not exceed "
+                f"{MAX_MODEL_OUTPUT_TOKENS}"
+            )
         if not 0.0 <= self.model_temperature <= 2.0:
             raise ValueError("model temperature must be between 0 and 2")
         if self.model_failure_cooldown_seconds <= 0:

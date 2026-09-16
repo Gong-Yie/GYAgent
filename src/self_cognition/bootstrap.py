@@ -121,6 +121,10 @@ from self_cognition.core.ids import new_correlation_id, new_run_id
 from self_cognition.runtime.health import HealthService
 from self_cognition.observability.metrics import MetricsRegistry
 from self_cognition.observability.tracing import TraceRecorder
+from self_cognition.infrastructure.llm.model_config import (
+    ModelEnvironmentConfig,
+    load_model_config,
+)
 from self_cognition.infrastructure.llm.router import (
     ModelRegistration,
     ModelRouter,
@@ -246,8 +250,17 @@ def build_container(
     resolved_settings = settings or load_settings(dotenv_path)
     if data_dir is not None:
         resolved_settings = replace(resolved_settings, data_dir=Path(data_dir))
+    dialogue_model_explicit = dialogue_model is not None
+    planning_model_explicit = planning_model is not None
+    action_model_explicit = action_model is not None
     secret_source = DotenvSecretSource(Path(dotenv_path))
     openai_configuration = _openai_configuration(secret_source)
+    model_environment = _load_model_environment(secret_source)
+    configured_tasks = (
+        frozenset(model_environment.routes)
+        if model_environment is not None
+        else frozenset()
+    )
     if openai_configuration is not None:
         api_key, model, base_url = openai_configuration
         if dialogue_model is None:
@@ -391,11 +404,18 @@ def build_container(
         ),
         clock=SYSTEM_CLOCK,
     )
+    _register_configured_models(
+        model_router,
+        model_environment,
+        secret_source,
+        resolved_settings,
+    )
     selected_proactive_model: ProactivityModel | None = None
     if proactive_model is not None:
         model_router.register(
             ModelRegistration("proactive", "proactive-default", proactive_model)
         )
+    if proactive_model is not None or "proactive" in configured_tasks:
         selected_proactive_model = RoutedProactivityModel(model_router)
     proactive = ProactiveIntentionService(
         event_store,
@@ -578,14 +598,56 @@ def build_container(
         capability_registry.register(tool_executor.registration)
     selected_planning_model = planning_model or RulePlanningModel()
     selected_action_model = action_model or RuleActionModel()
-    model_router.register(
-        ModelRegistration("dialogue", "dialogue-default", dialogue_adapter)
+    dialogue_default_cost = (
+        2.0
+        if (
+            "dialogue" in configured_tasks
+            and not dialogue_model_explicit
+            and openai_configuration is None
+        )
+        else 0.0
+    )
+    planning_default_cost = (
+        2.0
+        if (
+            "planning" in configured_tasks
+            and not planning_model_explicit
+            and openai_configuration is None
+        )
+        else 0.0
+    )
+    action_default_cost = (
+        2.0
+        if (
+            "action" in configured_tasks
+            and not action_model_explicit
+            and openai_configuration is None
+        )
+        else 0.0
     )
     model_router.register(
-        ModelRegistration("planning", "planning-default", selected_planning_model)
+        ModelRegistration(
+            "dialogue",
+            "dialogue-default",
+            dialogue_adapter,
+            cost_per_call=dialogue_default_cost,
+        )
     )
     model_router.register(
-        ModelRegistration("action", "action-default", selected_action_model)
+        ModelRegistration(
+            "planning",
+            "planning-default",
+            selected_planning_model,
+            cost_per_call=planning_default_cost,
+        )
+    )
+    model_router.register(
+        ModelRegistration(
+            "action",
+            "action-default",
+            selected_action_model,
+            cost_per_call=action_default_cost,
+        )
     )
     converse = ConverseService(
         process_event,
@@ -705,6 +767,100 @@ def build_container(
         model_router=model_router,
         health=health,
     )
+
+
+def _load_model_environment(
+    secret_source: DotenvSecretSource,
+) -> ModelEnvironmentConfig | None:
+    configured_path = secret_source.get("SC_MODELS_CONFIG")
+    if configured_path:
+        path = Path(configured_path)
+        if not path.exists():
+            raise FileNotFoundError(
+                f"SC_MODELS_CONFIG does not exist: {path}"
+            )
+        return load_model_config(path, environment=secret_source.get("SC_ENV"))
+    default_path = Path("config/models.json")
+    if default_path.exists():
+        return load_model_config(
+            default_path,
+            environment=secret_source.get("SC_ENV"),
+        )
+    return None
+
+
+def _register_configured_models(
+    model_router: ModelRouter,
+    model_environment: ModelEnvironmentConfig | None,
+    secret_source: DotenvSecretSource,
+    settings: ApplicationSettings,
+) -> None:
+    if model_environment is None:
+        return
+    for task, provider_ids in sorted(model_environment.routes.items()):
+        for index, provider_id in enumerate(provider_ids):
+            provider = model_environment.providers[provider_id]
+            api_key = secret_source.get(provider.api_key_env)
+            if api_key is None:
+                raise ValueError(
+                    f"missing credential for configured provider {provider_id}"
+                )
+            model = _configured_model_for_task(
+                task,
+                provider,
+                api_key,
+                settings,
+            )
+            model_router.register(
+                ModelRegistration(
+                    task,
+                    f"configured:{provider_id}",
+                    model,
+                    cost_per_call=0.5 + index,
+                )
+            )
+
+
+def _configured_model_for_task(
+    task: str,
+    provider,
+    api_key: str,
+    settings: ApplicationSettings,
+) -> object:
+    base_url = provider.base_url
+    if task == "dialogue":
+        return OpenAIResponsesDialogueModel.from_api_key(
+            api_key,
+            provider.model,
+            base_url=base_url,
+            max_output_tokens=settings.dialogue_max_output_tokens,
+            temperature=settings.model_temperature,
+        )
+    if task == "planning":
+        return OpenAIResponsesPlanningModel.from_api_key(
+            api_key,
+            provider.model,
+            base_url=base_url,
+            max_output_tokens=settings.cognition_max_output_tokens,
+            temperature=settings.model_temperature,
+        )
+    if task == "action":
+        return OpenAIResponsesActionModel.from_api_key(
+            api_key,
+            provider.model,
+            base_url=base_url,
+            max_output_tokens=settings.cognition_max_output_tokens,
+            temperature=settings.model_temperature,
+        )
+    if task == "proactive":
+        return OpenAIResponsesProactivityModel.from_api_key(
+            api_key,
+            provider.model,
+            base_url=base_url,
+            max_output_tokens=settings.cognition_max_output_tokens,
+            temperature=settings.model_temperature,
+        )
+    raise ValueError(f"unsupported configured model task: {task}")
 
 
 def _default_module_registrations(
