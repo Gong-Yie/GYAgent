@@ -1,8 +1,8 @@
 # `goal.md` 验收矩阵
 
 > 更新日期：2026-09-16
-> 当前基线：`main = 5a075d4`
-> 离线验证：`478 passed, 2 deselected`
+> 当前基线：`main = b48a4ab`
+> 离线验证：`479 passed, 2 deselected`
 > 真实模型：`live_openai` 此前 2 项通过
 > 真实双回路：最终 60 分钟 20 个事件、20/20 对话成功、`dialogue.failed=0`、backlog 峰值 1/最终 0、死信 0、worker 无错误、stop 前 health ready=true；`failure_classification` 仅 1 次 semantic provider timeout
 
@@ -31,7 +31,7 @@
 | DATA-02 | 事件序列重放后得到业务等价状态 | 已满足 | Replay 测试通过 |
 | DATA-03 | 跨 mind 读取被拒绝，心智内归属清晰 | 已满足 | 隔离、取消、主体归属测试通过 |
 | DATA-04 | 状态、记忆和关系更新保留历史证据 | 已满足 | 版本化状态和记忆版本测试通过 |
-| DATA-05 | 所有索引可删除并重建 | 部分满足 | provenance 图索引具备 manifest、rebuild_all、delete_all、verify 完整生命周期；字段/时间索引可重建；向量索引仍未接入 |
+| DATA-05 | 所有索引可删除并重建 | 已满足 | 字段/时间索引可重建；provenance 图索引有 manifest/rebuild_all/delete_all/verify；新增本地确定性向量索引，支持 search/delete/rebuild/verify，删除记忆后自动失效并重建 |
 | DATA-06 | 删除清除权威、缓存、导出、派生索引 | 已满足 | 删除传播到情绪、心境、主动意图和状态重放链路 |
 
 ## 9.3 对话与行动
@@ -95,8 +95,8 @@
 
 | 状态 | 数量 |
 | --- | ---: |
-| 已满足 | 35 |
-| 部分满足 | 9 |
+| 已满足 | 36 |
+| 部分满足 | 8 |
 | 未满足 | 0 |
 
 ## 真实双回路最终结果（2026-09-16）
@@ -150,11 +150,18 @@
 - 修复多进程 state 读写竞争：`FileStateRepository` 增加按 subject 跨进程锁，避免 PermissionError 重试造成重复 `state.reduced`；
 - 覆盖：`test/test_provenance_graph.py` 与 `test/test_phase41_reliability.py` 多进程用例。
 
+## 阶段 43.3 本地向量索引（2026-09-16）
+
+- 新增确定性 hashing 向量索引，覆盖最新 memory records；只用于检索候选收窄，不作为事实、关系、因果或能力证据；
+- `VectorIndexService` 支持 `rebuild`、`rebuild_all`、`delete`、`delete_all`、`verify` 和 `search`；
+- 删除全部向量索引后可重建；记忆删除后索引自动失效并在查询时重建，不再返回被删记忆；
+- 覆盖：`test/test_vector_index.py`。
+
 ## 当前仍未收口的验证项
 
 - 真实浏览器 WebUI 自动化；
 - 超过 60 分钟的情绪衰减、心境累积、沉默负例和主观体验盲测；
-- 向量索引、非事件证据 provenance（system prior/file fragment 等）；
+- 非事件证据 provenance（system prior/file fragment 等）；
 - 真实高风险工具、动作确认和失败降级场景；
 - 真实模型长期校准、低置信度表达和未知/假设类型（最终 60 分钟仍有 1 次 semantic provider timeout）；
 - WebUI 中情绪/心境的纠正、导出、删除全流程可视化。
