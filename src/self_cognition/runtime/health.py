@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -38,6 +39,65 @@ class HealthReport:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class HealthHistoryEntry:
+    checked_at: datetime
+    report: HealthReport
+
+    def as_dict(self) -> dict[str, object]:
+        outbox = _component(self.report.as_dict(), "outbox")
+        if outbox is not None:
+            outbox = dict(outbox)
+            for part in str(outbox.get("detail") or "").split(";"):
+                if "=" not in part:
+                    continue
+                key, value = part.split("=", 1)
+                try:
+                    outbox[key] = int(value)
+                except ValueError:
+                    outbox[key] = value
+        models = _component(self.report.as_dict(), "models")
+        modules = _component(self.report.as_dict(), "modules")
+        return {
+            "checked_at": self.checked_at.isoformat(),
+            "ready": self.report.ready,
+            "degraded": self.report.degraded,
+            "outbox": outbox,
+            "models": models,
+            "modules": modules,
+        }
+
+
+class HealthHistory:
+    """Bounded in-process history of health snapshots for UI diagnostics."""
+
+    def __init__(self, *, max_entries: int = 500) -> None:
+        if max_entries < 1:
+            raise ValueError("health history max entries must be positive")
+        self._entries: deque[HealthHistoryEntry] = deque(maxlen=max_entries)
+
+    def record(
+        self,
+        report: HealthReport,
+        *,
+        checked_at: datetime | None = None,
+    ) -> HealthHistoryEntry:
+        if not isinstance(report, HealthReport):
+            raise TypeError("report must be a HealthReport")
+        entry = HealthHistoryEntry(
+            checked_at=checked_at or datetime.now(timezone.utc),
+            report=report,
+        )
+        self._entries.append(entry)
+        return entry
+
+    def snapshots(self, *, limit: int = 50) -> tuple[HealthHistoryEntry, ...]:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        entries = tuple(self._entries)
+        return entries[-limit:]
+
+
 class HealthService:
     """Read-only health aggregation for local files, runtime and registries."""
 
@@ -50,6 +110,7 @@ class HealthService:
         module_registry: object,
         capability_registry: object,
         model_router: object | None = None,
+        history: HealthHistory | None = None,
     ) -> None:
         self._data_dir = Path(data_dir)
         self._event_bus = event_bus
@@ -57,6 +118,7 @@ class HealthService:
         self._modules = module_registry
         self._capabilities = capability_registry
         self._model_router = model_router
+        self._history = history or HealthHistory()
 
     def check(self) -> HealthReport:
         components = [
@@ -68,9 +130,16 @@ class HealthService:
         ]
         if self._model_router is not None:
             components.append(self._models_health())
-        return HealthReport(
+        report = HealthReport(
             ready=all(item.status == "healthy" for item in components),
             components=tuple(components),
+        )
+        self._history.record(report)
+        return report
+
+    def history(self, *, limit: int = 50) -> tuple[dict[str, object], ...]:
+        return tuple(
+            entry.as_dict() for entry in self._history.snapshots(limit=limit)
         )
 
     def _files(self) -> ComponentHealth:
@@ -173,3 +242,13 @@ class HealthService:
 
 def _isoformat(value: datetime | None) -> str | None:
     return None if value is None else value.isoformat()
+
+
+def _component(report: dict[str, object], name: str) -> dict[str, object] | None:
+    components = report.get("components")
+    if not isinstance(components, list):
+        return None
+    for item in components:
+        if isinstance(item, dict) and item.get("name") == name:
+            return item
+    return None

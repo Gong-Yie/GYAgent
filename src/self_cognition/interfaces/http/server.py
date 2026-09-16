@@ -96,6 +96,13 @@ def _serve_static(handler: BaseHTTPRequestHandler, root: Path, request_path: str
 def _handle(container: ApplicationContainer, method: str, path: str, query: dict[str, list[str]], body: dict[str, Any]) -> dict[str, object]:
     if method == "GET" and path == "/health":
         return container.health.check().as_dict()
+    if method == "GET" and path == "/health/history":
+        limit = _query_int(query, "limit", default=50, minimum=1, maximum=500)
+        snapshots = container.health.history(limit=limit)
+        if not snapshots:
+            container.health.check()
+            snapshots = container.health.history(limit=limit)
+        return {"snapshots": list(snapshots)}
     if method == "GET" and path in {"/metrics", "/usage"}:
         snapshot = container.metrics.snapshot()
         return {"counters": dict(snapshot.counters), "gauges": dict(snapshot.gauges), "timings": {key: list(value) for key, value in snapshot.timings.items()}}
@@ -384,3 +391,21 @@ def _write_json(handler: BaseHTTPRequestHandler, status: int, payload: object) -
     handler.send_header("Content-Length", str(len(body)))
     handler.end_headers()
     handler.wfile.write(body)
+
+
+def _query_int(
+    query: dict[str, list[str]],
+    key: str,
+    *,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    raw = query.get(key, [str(default)])[-1]
+    try:
+        value = int(raw)
+    except ValueError as error:
+        raise ValueError(f"{key} must be an integer") from error
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{key} must be between {minimum} and {maximum}")
+    return value
