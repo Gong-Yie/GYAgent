@@ -17,8 +17,18 @@ from self_cognition.core.actions import (
     ActionResultPayload,
     ActionResultStatus,
 )
+from self_cognition.core.contributions import (
+    CognitiveContribution,
+    CognitionType,
+    ContributionOperation,
+)
 from self_cognition.core.errors import ContractValidationError
-from self_cognition.core.events import EventEnvelope, EventSource
+from self_cognition.core.evidence import EvidenceRef, EvidenceSourceKind
+from self_cognition.core.events import (
+    CognitionModuleResultPayload,
+    EventEnvelope,
+    EventSource,
+)
 from self_cognition.core.provenance import (
     ProvenanceEdgeKind,
     ProvenanceGraph,
@@ -173,7 +183,7 @@ def _action_fixture(owner: SubjectScope):
         value_basis=("test",),
         relationship_context="test context",
         risks=("bounded",),
-        evidence_ids=(),
+        evidence_ids=(uuid4(),),
         decided_at=now,
         valid_until=now + timedelta(minutes=5),
         one_time_scope=request.action_id,
@@ -256,6 +266,7 @@ def test_provenance_graph_includes_action_tool_result_and_full_lifecycle(
         ProvenanceNodeKind.ACTION_REQUEST,
         ProvenanceNodeKind.ACTION_DECISION,
         ProvenanceNodeKind.ACTION_RESULT,
+        ProvenanceNodeKind.EVIDENCE,
     }
 
     result_node = graph.node(result.result_id)
@@ -275,3 +286,65 @@ def test_provenance_graph_includes_action_tool_result_and_full_lifecycle(
     rebuilt = container.provenance.rebuild_all()
     assert len(rebuilt) == 1
     assert container.provenance.verify()
+
+def test_provenance_graph_builds_evidence_node_for_system_prior() -> None:
+    source_event = EventEnvelope.user_message("user-1", "hello")
+    subject = source_event.subject
+    prior_ref = EvidenceRef(
+        evidence_id=uuid4(),
+        source_kind=EvidenceSourceKind.SYSTEM_PRIOR,
+        source_ref="policy:v1",
+        scope=DataScope(subject, DisclosureScope.PRIVATE),
+        locator="prior.value",
+        reliability=0.9,
+    )
+    contribution = CognitiveContribution(
+        contribution_id=uuid4(),
+        target=subject,
+        target_field="values.principle",
+        operation=ContributionOperation.SET,
+        cognition_type=CognitionType.INFERENCE,
+        value="evidence-backed principle",
+        confidence=0.7,
+        evidence_refs=(prior_ref,),
+        source_module="test.evidence",
+        module_version="1",
+        scope=DataScope(subject, DisclosureScope.PRIVATE),
+        created_at=source_event.recorded_at,
+        valid_from=source_event.occurred_at,
+    )
+    result_event = EventEnvelope(
+        event_id=uuid4(),
+        event_type="cognition.module_result",
+        actor=None,
+        subject=subject,
+        payload=CognitionModuleResultPayload(
+            module_id="test.evidence",
+            module_version="1",
+            deterministic=True,
+            status="succeeded",
+            contributions=(contribution,),
+        ),
+        occurred_at=source_event.occurred_at,
+        recorded_at=source_event.recorded_at,
+        source=EventSource.SYSTEM,
+        scope=DataScope(subject, DisclosureScope.PRIVATE),
+        causation_id=source_event.event_id,
+        correlation_id=uuid4(),
+        run_id=uuid4(),
+    )
+
+    graph = build_provenance_graph(
+        MindScope(subject.mind.mind_id),
+        (source_event, result_event),
+        (),
+    )
+    evidence_node = graph.node(prior_ref.evidence_id)
+
+    assert evidence_node.kind is ProvenanceNodeKind.EVIDENCE
+    assert evidence_node.attributes["source_kind"] == "system_prior"
+    assert any(
+        edge.kind is ProvenanceEdgeKind.DERIVED_FROM
+        and edge.target_id == prior_ref.evidence_id
+        for edge in graph.outgoing(contribution.contribution_id)
+    )

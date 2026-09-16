@@ -111,13 +111,18 @@ def build_provenance_graph(
                 },
             )
             for evidence in contribution.evidence_refs:
-                if evidence.evidence_id not in event_nodes:
-                    continue
+                target_id = _evidence_target(
+                    nodes,
+                    event_nodes,
+                    evidence,
+                    contribution.target,
+                    contribution.created_at,
+                )
                 _add_edge(
                     edges,
                     kind=ProvenanceEdgeKind.DERIVED_FROM,
                     source=contribution.contribution_id,
-                    target=evidence.evidence_id,
+                    target=target_id,
                     subject=contribution.target,
                     recorded_at=contribution.created_at,
                     attributes={"source_kind": evidence.source_kind.value},
@@ -169,13 +174,18 @@ def build_provenance_graph(
                 },
             )
         for evidence in memory.evidence_refs:
-            if evidence.evidence_id not in event_nodes:
-                continue
+            target_id = _evidence_target(
+                nodes,
+                event_nodes,
+                evidence,
+                memory.subject,
+                memory.created_at,
+            )
             _add_edge(
                 edges,
                 kind=ProvenanceEdgeKind.DERIVED_FROM,
                 source=memory.memory_id,
-                target=evidence.evidence_id,
+                target=target_id,
                 subject=memory.subject,
                 recorded_at=memory.created_at,
                 attributes={"source_kind": evidence.source_kind.value},
@@ -186,6 +196,7 @@ def build_provenance_graph(
         if relationship_node is not None:
             nodes[relationship_node.node_id] = relationship_node
             _link_contribution_node(
+                nodes,
                 edges,
                 relationship_node,
                 contribution,
@@ -195,6 +206,7 @@ def build_provenance_graph(
         if narrative_node is not None:
             nodes[narrative_node.node_id] = narrative_node
             _link_contribution_node(
+                nodes,
                 edges,
                 narrative_node,
                 contribution,
@@ -216,13 +228,18 @@ def build_provenance_graph(
             attributes={},
         )
         for evidence in contribution.evidence_refs:
-            if evidence.evidence_id not in event_nodes:
-                continue
+            target_id = _evidence_target(
+                nodes,
+                event_nodes,
+                evidence,
+                contribution.target,
+                contribution.created_at,
+            )
             _add_edge(
                 edges,
                 kind=ProvenanceEdgeKind.DERIVED_FROM,
                 source=affect_node.node_id,
-                target=evidence.evidence_id,
+                target=target_id,
                 subject=contribution.target,
                 recorded_at=contribution.created_at,
                 attributes={"source_kind": evidence.source_kind.value},
@@ -329,8 +346,12 @@ def build_provenance_graph(
                     attributes={},
                 )
             for evidence_id in decision.evidence_ids:
-                if evidence_id not in event_nodes:
-                    continue
+                _ensure_placeholder_evidence_node(
+                    nodes,
+                    evidence_id,
+                    request.owner,
+                    decision.decided_at,
+                )
                 _add_edge(
                     edges,
                     kind=ProvenanceEdgeKind.DERIVED_FROM,
@@ -536,6 +557,7 @@ def _mood_source_emotion_ids(contribution: CognitiveContribution) -> tuple[UUID,
 
 
 def _link_contribution_node(
+    nodes: dict[UUID, ProvenanceNode],
     edges: dict[UUID, ProvenanceEdge],
     node: ProvenanceNode,
     contribution: CognitiveContribution,
@@ -551,13 +573,18 @@ def _link_contribution_node(
         attributes={},
     )
     for evidence in contribution.evidence_refs:
-        if evidence.evidence_id not in event_nodes:
-            continue
+        target_id = _evidence_target(
+            nodes,
+            event_nodes,
+            evidence,
+            node.subject,
+            node.recorded_at,
+        )
         _add_edge(
             edges,
             kind=ProvenanceEdgeKind.DERIVED_FROM,
             source=node.node_id,
-            target=evidence.evidence_id,
+            target=target_id,
             subject=node.subject,
             recorded_at=node.recorded_at,
             attributes={"source_kind": evidence.source_kind.value},
@@ -694,6 +721,48 @@ def _ensure_action_request_placeholder(
         subject=subject,
         recorded_at=recorded_at,
         attributes={"placeholder": True},
+    )
+
+
+def _evidence_target(
+    nodes: dict[UUID, ProvenanceNode],
+    event_nodes: Mapping[UUID, ProvenanceNode],
+    evidence,
+    fallback_subject,
+    fallback_recorded_at: datetime,
+) -> UUID:
+    if evidence.evidence_id in event_nodes:
+        return evidence.evidence_id
+    if evidence.evidence_id not in nodes:
+        nodes[evidence.evidence_id] = ProvenanceNode(
+            node_id=evidence.evidence_id,
+            kind=ProvenanceNodeKind.EVIDENCE,
+            subject=evidence.scope.owner,
+            recorded_at=evidence.observed_at or fallback_recorded_at,
+            attributes={
+                "source_kind": evidence.source_kind.value,
+                "source_ref": evidence.source_ref,
+                "locator": evidence.locator,
+                "reliability": evidence.reliability,
+            },
+        )
+    return evidence.evidence_id
+
+
+def _ensure_placeholder_evidence_node(
+    nodes: dict[UUID, ProvenanceNode],
+    evidence_id: UUID,
+    subject,
+    recorded_at: datetime,
+) -> None:
+    if evidence_id in nodes:
+        return
+    nodes[evidence_id] = ProvenanceNode(
+        node_id=evidence_id,
+        kind=ProvenanceNodeKind.EVIDENCE,
+        subject=subject,
+        recorded_at=recorded_at,
+        attributes={"placeholder": True, "evidence_id": str(evidence_id)},
     )
 
 
