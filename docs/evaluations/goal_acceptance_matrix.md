@@ -1,8 +1,8 @@
 # `goal.md` 验收矩阵
 
 > 更新日期：2026-09-16
-> 当前基线：`main = 02e1ed6`
-> 离线验证：`467 passed, 2 deselected`
+> 当前基线：`main = affcedd`
+> 离线验证：`471 passed, 2 deselected`
 > 真实模型：`live_openai` 此前 2 项通过
 > 真实双回路：最终 60 分钟 20 个事件、20/20 对话成功、`dialogue.failed=0`、backlog 峰值 1/最终 0、死信 0、worker 无错误、stop 前 health ready=true；`failure_classification` 仅 1 次 semantic provider timeout
 
@@ -51,8 +51,8 @@
 | --- | --- | --- | --- |
 | REL-01 | 模型超时/非法结构不破坏状态 | 已满足 | 失败隔离、修复调用和状态保护测试通过 |
 | REL-02 | 单模块失败不阻塞独立模块 | 已满足 | Engine 隔离测试通过 |
-| REL-03 | 崩溃后识别未完成运行并恢复/终止 | 部分满足 | 文件恢复、outbox、RunRecord 已实现；真实进程强杀覆盖有限 |
-| REL-04 | 取消传播到模型、工具、worker | 部分满足 | 模型/动作取消已覆盖；长期 worker 取消仍待完整验收 |
+| REL-03 | 崩溃后识别未完成运行并恢复/终止 | 已满足 | 真实子进程强杀测试：pending event 重启后恢复入队并成功 drain；running RunRecord 重启后明确标记 INTERRUPTED |
+| REL-04 | 取消传播到模型、工具、worker | 已满足 | 模型/动作取消测试已有；新增运行中 worker 取消集成测试，RunLifecycle.request_cancel 可传播到 RunContext 和模块 |
 | REL-05 | 本地事件、查询、写入有延迟指标 | 部分满足 | Metrics 已接入；真实延迟分位数未系统评测 |
 | REL-06 | 备份恢复校验事件数、版本和索引 | 已满足 | backup/restore/migrate 测试通过 |
 
@@ -89,14 +89,14 @@
 | EMO-05 | 情绪可调节社交 review，但不放宽事实 grounding | 已满足 | ReviewPolicy 单元测试覆盖边界 |
 | EMO-06 | boredom 形成 social_connection 动机与主动聊天 | 已满足 | 5/30/60 分钟真实运行均产生主动 Mailbox；最终 60 分钟 5 条 social_connection；动态 LLM 表达真实验证通过 |
 | EMO-07 | 用户可以查看、纠正、导出、删除、关闭情绪系统 | 已满足 | CLI/HTTP/WebUI 查看；纠正、导出、删除、关闭/重新开启均有入口和测试；删除传播已覆盖 |
-| EMO-08 | 情绪行为可审计、可取消、可重放、幂等 | 部分满足 | 冷却和幂等测试已有；最终 60 分钟 5 条主动意图/Mailbox 无等价重复；跨重启长期回放仍待专项 |
+| EMO-08 | 情绪行为可审计、可取消、可重放、幂等 | 已满足 | 冷却/幂等测试已有；新增跨重启 affect/mood/intention/Mailbox 一致性测试 |
 
 ## 状态汇总
 
 | 状态 | 数量 |
 | --- | ---: |
-| 已满足 | 31 |
-| 部分满足 | 13 |
+| 已满足 | 34 |
+| 部分满足 | 10 |
 | 未满足 | 0 |
 
 ## 真实双回路最终结果（2026-09-16）
@@ -121,11 +121,19 @@
 - 该 run 的唯一 `dialogue.failed` 是合理的 `GroundingRejected`：回答新增了未被证据支持的推断“听起来是平平稳稳的一天”；claim 级审查按要求拒绝，不作为系统故障。
 - 另一次 60 分钟预跑中定位到 input evidence 与低置信 workspace item 共享证据时的 grounding 误伤，已在 `02e1ed6` 修复并加单元测试；最终 60 分钟无 generate 失败且 `dialogue.failed=0`。
 
+## 阶段 41 可靠性验证（2026-09-16）
+
+- 真实子进程强杀：`scripts/reliability_probe.py kill-pending` 后重启，pending event 被恢复、入队并成功 drain；
+- 真实子进程强杀：`kill-running` 后重启，未完成 RunRecord 被明确标记 `INTERRUPTED`；
+- worker 取消：运行中模块观察到 `RunContext` 取消并返回 CANCELLED，RunRecord 落为 `CANCELLED`；
+- 跨重启：`EmotionState`、`MoodState`、`ProactiveIntention`、Mailbox 在重启后保持一致；
+- 覆盖测试：`test/test_phase41_reliability.py`。
+
 ## 当前仍未收口的验证项
 
 - 真实浏览器 WebUI 自动化；
 - 超过 60 分钟的情绪衰减、心境累积、沉默负例和主观体验盲测；
-- 真实进程强杀、长期 worker 取消、多进程 worker；
+- 多进程 worker；
 - 向量/图谱索引和跨记忆/关系/叙事的完整来源图；
 - 真实高风险工具、动作确认和失败降级场景；
 - 真实模型长期校准、低置信度表达和未知/假设类型（最终 60 分钟仍有 1 次 semantic provider timeout）；
