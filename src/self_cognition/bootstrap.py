@@ -81,6 +81,9 @@ from self_cognition.infrastructure.persistence.file_deletion_repository import (
     FileDeletionRepository,
 )
 from self_cognition.infrastructure.persistence.file_layout import FileDataLayout
+from self_cognition.infrastructure.persistence.file_model_health_store import (
+    FileModelHealthStore,
+)
 from self_cognition.infrastructure.persistence.file_memory_repository import (
     FileMemoryRepository,
 )
@@ -323,6 +326,9 @@ def build_container(
                 temperature=resolved_settings.model_temperature,
             )
     layout = FileDataLayout(resolved_settings.data_dir).ensure()
+    model_health_store = FileModelHealthStore(
+        layout.cache / "model_health.json"
+    )
     metrics = MetricsRegistry()
     traces = TraceRecorder()
     event_store = FileEventStore(
@@ -403,6 +409,7 @@ def build_container(
             seconds=resolved_settings.model_max_failure_cooldown_seconds
         ),
         clock=SYSTEM_CLOCK,
+        health_snapshot_sink=model_health_store.save,
     )
     _register_configured_models(
         model_router,
@@ -649,6 +656,7 @@ def build_container(
             cost_per_call=action_default_cost,
         )
     )
+    model_router.restore_health(model_health_store.load())
     converse = ConverseService(
         process_event,
         event_store,
@@ -720,6 +728,7 @@ def build_container(
         lifecycle=lifecycle,
         module_registry=module_registry,
         capability_registry=capability_registry,
+        run_repository=run_repository,
         model_router=model_router,
     )
     return ApplicationContainer(

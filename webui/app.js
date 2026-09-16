@@ -34,9 +34,9 @@ async function renderConflicts(){await renderJsonView('冲突投影','/conflicts
 async function renderUsage(){await renderJsonView('运行用量','/usage','counters')}
 async function renderJsonView(title,path,key){view.innerHTML=`<div class="panel"><h2>${title}</h2><pre id="json-view">读取中...</pre></div>`;try{const data=await api(path);document.querySelector('#json-view').textContent=JSON.stringify(data[key]??data,null,2)}catch(error){document.querySelector('#json-view').textContent=error.message}}
 async function renderHealth(){
-  view.innerHTML='<div class="panel"><h2>健康与降级历史</h2><div id="health-history" class="memory-list"><div class="empty">读取中...</div></div></div>';
+  view.innerHTML='<div class="panel"><h2>健康与降级历史</h2><div id="health-history" class="memory-list"><div class="empty">读取中...</div></div><h2>最近失败链</h2><div id="health-failures" class="memory-list"><div class="empty">读取中...</div></div></div>';
   try{
-    const data=await api('/health/history?limit=100');
+    const [data,failureData]=await Promise.all([api('/health/history?limit=100'),api('/health/failures?limit=20')]);
     const items=(data.snapshots||[]).slice().reverse();
     document.querySelector('#health-history').innerHTML=items.map(item=>{
       const outbox=item.outbox||{};
@@ -47,7 +47,15 @@ async function renderHealth(){
       const issues=[...modelIssues,...moduleIssues];
       return `<article class="memory-card"><div><strong>${esc(item.ready?'正常':'需要关注')}</strong><span class="muted">${esc(item.checked_at)}</span><span class="muted">backlog ${esc(outbox.backlog??0)} · dead ${esc(outbox.dead_letters??0)}</span><span class="muted">models ${esc(models.status||'unknown')} · modules ${esc(modules.status||'unknown')}</span>${issues.length?`<span class="muted">降级：${esc(issues.join(' | '))}</span>`:''}</div><span class="tag">${esc(item.degraded?'degraded':'healthy')}</span></article>`;
     }).join('')||'<div class="empty">还没有健康快照。</div>';
-  }catch(error){document.querySelector('#health-history').innerHTML=`<div class="empty">${esc(error.message)}</div>`}
+    const failures=(failureData.failures||[]);
+    document.querySelector('#health-failures').innerHTML=failures.map(item=>{
+      const reason=item.termination_reason||item.error_type||'未分类';
+      return `<article class="memory-card"><div><strong>${esc(item.status||'unknown')}</strong><span class="muted">${esc(item.updated_at||'')}</span><span class="muted">${esc(item.kind||'')} · ${esc(item.run_id||'')}</span><span class="muted">${esc(reason)}</span></div><span class="tag">failure</span></article>`;
+    }).join('')||'<div class="empty">没有最近失败。</div>';
+  }catch(error){
+    document.querySelector('#health-history').innerHTML=`<div class="empty">${esc(error.message)}</div>`;
+    document.querySelector('#health-failures').innerHTML=`<div class="empty">${esc(error.message)}</div>`;
+  }
 }
 async function health(){try{const data=await api('/health');document.querySelector('#health-dot').className='health-dot '+(data.ready?'ok':'bad');document.querySelector('#health-label').textContent=data.ready?'运行正常':'需要关注'}catch(error){document.querySelector('#health-dot').className='health-dot bad';document.querySelector('#health-label').textContent='不可用'}}
 document.querySelectorAll('.nav-item').forEach(item=>item.onclick=()=>setView(item.dataset.view));setView('chat');health();

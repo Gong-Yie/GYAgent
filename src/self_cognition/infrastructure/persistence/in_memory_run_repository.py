@@ -2,7 +2,7 @@ from threading import RLock
 from uuid import UUID
 
 from self_cognition.core.errors import ContractValidationError
-from self_cognition.core.runs import RunRecord
+from self_cognition.core.runs import RunRecord, RunStatus
 from self_cognition.core.scopes import SubjectScope
 
 
@@ -43,6 +43,22 @@ class InMemoryRunRepository:
     def read_by_subject(self, subject: SubjectScope) -> tuple[RunRecord, ...]:
         with self._lock:
             return tuple(record for record in self._records.values() if record.subject == subject)
+
+    def read_recent_failures(self, limit: int = 50) -> tuple[RunRecord, ...]:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        with self._lock:
+            failures = [
+                record
+                for record in self._records.values()
+                if record.status.is_terminal
+                and record.status is not RunStatus.COMPLETED
+            ]
+        failures.sort(
+            key=lambda record: (record.updated_at, str(record.run_id)),
+            reverse=True,
+        )
+        return tuple(failures[:limit])
 
     def forget(self, event_ids: tuple[UUID, ...]) -> None:
         targets = set(event_ids)

@@ -109,6 +109,7 @@ class HealthService:
         lifecycle: object,
         module_registry: object,
         capability_registry: object,
+        run_repository: object | None = None,
         model_router: object | None = None,
         history: HealthHistory | None = None,
     ) -> None:
@@ -117,6 +118,7 @@ class HealthService:
         self._lifecycle = lifecycle
         self._modules = module_registry
         self._capabilities = capability_registry
+        self._run_repository = run_repository
         self._model_router = model_router
         self._history = history or HealthHistory()
 
@@ -141,6 +143,18 @@ class HealthService:
         return tuple(
             entry.as_dict() for entry in self._history.snapshots(limit=limit)
         )
+
+    def failures(self, *, limit: int = 50) -> tuple[dict[str, object], ...]:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        reader = getattr(self._run_repository, "read_recent_failures", None)
+        if not callable(reader):
+            return ()
+        try:
+            records = reader(limit=limit)
+        except Exception:
+            return ()
+        return tuple(_failure_to_dict(record) for record in records)
 
     def _files(self) -> ComponentHealth:
         return ComponentHealth(
@@ -252,3 +266,38 @@ def _component(report: dict[str, object], name: str) -> dict[str, object] | None
         if isinstance(item, dict) and item.get("name") == name:
             return item
     return None
+
+
+def _failure_to_dict(record: object) -> dict[str, object]:
+    subject = getattr(record, "subject", None)
+    subject_payload: dict[str, object] | None = None
+    if subject is not None:
+        try:
+            subject_payload = {
+                "mind_id": subject.mind.mind_id,
+                "kind": subject.subject.kind.value,
+                "subject_id": subject.subject.subject_id,
+            }
+        except AttributeError:
+            subject_payload = None
+    return {
+        "run_id": str(getattr(record, "run_id", "")),
+        "correlation_id": str(getattr(record, "correlation_id", "")),
+        "kind": _enum_value(getattr(record, "kind", None)),
+        "status": _enum_value(getattr(record, "status", None)),
+        "subject": subject_payload,
+        "updated_at": _value_isoformat(getattr(record, "updated_at", None)),
+        "error_type": getattr(record, "error_type", None),
+        "termination_reason": getattr(record, "termination_reason", None),
+        "input_event_ids": [
+            str(item) for item in getattr(record, "input_event_ids", ())
+        ],
+    }
+
+
+def _enum_value(value: object) -> object:
+    return getattr(value, "value", value)
+
+
+def _value_isoformat(value: object) -> object:
+    return value.isoformat() if isinstance(value, datetime) else value

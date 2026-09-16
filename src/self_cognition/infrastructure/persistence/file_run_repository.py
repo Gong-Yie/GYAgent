@@ -9,7 +9,7 @@ from self_cognition.core.errors import (
     ContractValidationError,
     MalformedSerializedDataError,
 )
-from self_cognition.core.runs import RunRecord, run_from_dict, run_to_dict
+from self_cognition.core.runs import RunRecord, RunStatus, run_from_dict, run_to_dict
 from self_cognition.core.scopes import SubjectScope
 from self_cognition.infrastructure.persistence.atomic_io import atomic_write_text
 from self_cognition.infrastructure.persistence.file_lock import FileLock
@@ -64,6 +64,21 @@ class FileRunRepository:
 
     def read_by_subject(self, subject: SubjectScope) -> tuple[RunRecord, ...]:
         return tuple(record for record in self._read_all() if record.subject == subject)
+
+    def read_recent_failures(self, limit: int = 50) -> tuple[RunRecord, ...]:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        failures = [
+            record
+            for record in self._read_all()
+            if record.status.is_terminal
+            and record.status is not RunStatus.COMPLETED
+        ]
+        failures.sort(
+            key=lambda record: (record.updated_at, str(record.run_id)),
+            reverse=True,
+        )
+        return tuple(failures[:limit])
 
     def forget(self, event_ids: tuple[UUID, ...]) -> None:
         targets = set(event_ids)

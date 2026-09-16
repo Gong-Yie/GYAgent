@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
 from self_cognition.bootstrap import build_container
+from self_cognition.core.runs import RunKind, RunRecord, RunStatus
+from self_cognition.core.scopes import SubjectScope
 from self_cognition.interfaces.http.server import _handle, _query_int
 from self_cognition.runtime.health import (
     ComponentHealth,
@@ -100,3 +103,49 @@ def test_health_history_limit_validation() -> None:
             minimum=1,
             maximum=500,
         )
+
+def _failed_run() -> RunRecord:
+    now = datetime(2026, 9, 16, 12, tzinfo=timezone.utc)
+    return RunRecord(
+        run_id=uuid4(),
+        kind=RunKind.COGNITIVE_CYCLE,
+        subject=SubjectScope.for_mind("mind-health"),
+        correlation_id=uuid4(),
+        started_at=now,
+        updated_at=now,
+        deadline=now + timedelta(minutes=5),
+        status=RunStatus.FAILED,
+        error_type="ModelTimeoutError",
+        termination_reason="provider timeout",
+        input_event_ids=(uuid4(),),
+    )
+
+
+def test_http_health_failures_returns_recent_failure_chain(
+    tmp_path: Path,
+) -> None:
+    container = build_container(
+        tmp_path,
+        settings=ApplicationSettings(data_dir=tmp_path, worker_enabled=False),
+        dotenv_path=tmp_path / "missing.env",
+    )
+    record = _failed_run()
+    container.run_repository.save(record)
+
+    payload = _handle(
+        container,
+        "GET",
+        "/health/failures",
+        {"limit": ["10"]},
+        {},
+    )
+
+    failures = payload["failures"]
+    matched = next(
+        item for item in failures if item["run_id"] == str(record.run_id)
+    )
+    assert matched["status"] == "failed"
+    assert matched["kind"] == "cognitive_cycle"
+    assert matched["error_type"] == "ModelTimeoutError"
+    assert matched["termination_reason"] == "provider timeout"
+    assert matched["input_event_ids"] == [str(record.input_event_ids[0])]

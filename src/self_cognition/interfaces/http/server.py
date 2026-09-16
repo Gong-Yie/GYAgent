@@ -103,6 +103,9 @@ def _handle(container: ApplicationContainer, method: str, path: str, query: dict
             container.health.check()
             snapshots = container.health.history(limit=limit)
         return {"snapshots": list(snapshots)}
+    if method == "GET" and path == "/health/failures":
+        limit = _query_int(query, "limit", default=20, minimum=1, maximum=200)
+        return {"failures": list(container.health.failures(limit=limit))}
     if method == "GET" and path in {"/metrics", "/usage"}:
         snapshot = container.metrics.snapshot()
         return {"counters": dict(snapshot.counters), "gauges": dict(snapshot.gauges), "timings": {key: list(value) for key, value in snapshot.timings.items()}}

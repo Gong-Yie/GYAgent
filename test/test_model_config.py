@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
 from self_cognition.bootstrap import build_container
 from self_cognition.infrastructure.llm.model_config import load_model_config
+from self_cognition.infrastructure.llm.router import (
+    ModelRegistration,
+    ModelRouter,
+)
+from self_cognition.infrastructure.persistence.file_model_health_store import (
+    FileModelHealthStore,
+)
 from self_cognition.settings import ApplicationSettings, MAX_MODEL_OUTPUT_TOKENS
 
 
@@ -141,3 +149,81 @@ def test_application_settings_rejects_output_tokens_above_maximum() -> None:
         ApplicationSettings(
             dialogue_max_output_tokens=MAX_MODEL_OUTPUT_TOKENS + 1,
         )
+
+def test_model_config_migrates_legacy_flat_payload(tmp_path: Path) -> None:
+    development = _config_payload()["environments"]["development"]
+    payload = {
+        "default_environment": "development",
+        "providers": development["providers"],
+        "routes": development["routes"],
+    }
+    path = tmp_path / "models.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    config = load_model_config(path)
+
+    assert config.environment == "development"
+    assert tuple(config.providers) == ("primary", "backup")
+    assert config.routes["dialogue"] == ("primary", "backup")
+
+def test_model_router_restores_bounded_provider_health(tmp_path: Path) -> None:
+    store = FileModelHealthStore(tmp_path / "model_health.json")
+
+    def router() -> ModelRouter:
+        return ModelRouter(
+            (
+                ModelRegistration(
+                    "dialogue",
+                    "primary",
+                    object(),
+                    cost_per_call=0.5,
+                ),
+                ModelRegistration(
+                    "dialogue",
+                    "backup",
+                    object(),
+                    cost_per_call=1.5,
+                ),
+            ),
+            failure_cooldown=timedelta(seconds=30),
+            health_snapshot_sink=store.save,
+        )
+
+    first = router()
+    first.mark_degraded("primary", "dialogue", "ModelTimeoutError")
+
+    second = router()
+    second.restore_health(store.load())
+
+    statuses = {item.provider_id: item for item in second.statuses()}
+    assert statuses["primary"].healthy is False
+    assert statuses["primary"].degraded_reason == "ModelTimeoutError"
+    assert second.select("dialogue").provider_id == "backup"
+
+    second.mark_healthy("primary", "dialogue")
+    third = router()
+    third.restore_health(store.load())
+    recovered = {item.provider_id: item for item in third.statuses()}
+    assert recovered["primary"].healthy is True
+    assert third.select("dialogue").provider_id == "primary"
+
+
+def test_model_router_does_not_persist_routine_health(
+    tmp_path: Path,
+) -> None:
+    store = FileModelHealthStore(tmp_path / "model_health.json")
+    model_router = ModelRouter(
+        (ModelRegistration("dialogue", "primary", object()),),
+        health_snapshot_sink=store.save,
+    )
+
+    model_router.mark_healthy("primary", "dialogue")
+
+    assert not store.path.exists()
+
+
+def test_model_health_store_ignores_corrupt_snapshot(tmp_path: Path) -> None:
+    store = FileModelHealthStore(tmp_path / "model_health.json")
+    store.path.write_text("{not-json", encoding="utf-8")
+
+    assert store.load() == ()

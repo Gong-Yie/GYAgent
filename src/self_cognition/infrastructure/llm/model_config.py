@@ -4,7 +4,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Callable, Mapping
 
 
 MODEL_CONFIG_SCHEMA_VERSION = 1
@@ -18,6 +18,7 @@ MODEL_TASKS = frozenset(
 )
 _ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _FORBIDDEN_PROVIDER_KEYS = frozenset({"api_key", "key", "token", "secret", "password"})
+MODEL_CONFIG_LEGACY_SCHEMA_VERSION = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +37,63 @@ class ModelEnvironmentConfig:
     routes: Mapping[str, tuple[str, ...]]
 
 
+def migrate_model_config_payload(data: object) -> dict[str, object]:
+    """Return a current-schema model config payload.
+
+    Schema version 0 is the pre-environment flat format with top-level
+    ``providers`` and ``routes``.  Missing ``schema_version`` is treated as
+    version 0 so early WIP configs remain loadable.
+    """
+
+    if not isinstance(data, dict):
+        raise ValueError("model config must be an object")
+    raw_version = data.get("schema_version", MODEL_CONFIG_LEGACY_SCHEMA_VERSION)
+    if not isinstance(raw_version, int) or isinstance(raw_version, bool):
+        raise ValueError("model config schema_version must be an integer")
+    version = raw_version
+    if version > MODEL_CONFIG_SCHEMA_VERSION:
+        raise ValueError("unsupported model config schema version")
+    while version < MODEL_CONFIG_SCHEMA_VERSION:
+        migration = _MODEL_CONFIG_MIGRATIONS.get(version)
+        if migration is None:
+            raise ValueError("unsupported model config schema version")
+        data = migration(dict(data))
+        migrated_version = data.get("schema_version")
+        if not isinstance(migrated_version, int) or isinstance(
+            migrated_version, bool
+        ):
+            raise ValueError("model config migration produced invalid schema")
+        version = migrated_version
+    return dict(data)
+
+
+def _migrate_model_config_v0_to_v1(
+    data: dict[str, object],
+) -> dict[str, object]:
+    raw_default = data.get("default_environment", "default")
+    if not isinstance(raw_default, str) or not raw_default.strip():
+        raise ValueError("model config default_environment must be non-blank")
+    environment = raw_default.strip()
+    return {
+        "schema_version": MODEL_CONFIG_SCHEMA_VERSION,
+        "default_environment": environment,
+        "environments": {
+            environment: {
+                "providers": data.get("providers", {}),
+                "routes": data.get("routes", {}),
+            }
+        },
+    }
+
+
+_MODEL_CONFIG_MIGRATIONS: dict[
+    int,
+    Callable[[dict[str, object]], dict[str, object]],
+] = {
+    MODEL_CONFIG_LEGACY_SCHEMA_VERSION: _migrate_model_config_v0_to_v1,
+}
+
+
 def load_model_config(
     path: str | Path,
     *,
@@ -44,11 +102,8 @@ def load_model_config(
     config_path = Path(path)
     if not config_path.exists():
         raise FileNotFoundError(f"model config does not exist: {config_path}")
-    data = json.loads(config_path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise ValueError("model config must be an object")
-    if data.get("schema_version") != MODEL_CONFIG_SCHEMA_VERSION:
-        raise ValueError("unsupported model config schema version")
+    raw_data = json.loads(config_path.read_text(encoding="utf-8"))
+    data = migrate_model_config_payload(raw_data)
     default_environment = data.get("default_environment")
     environments = data.get("environments")
     if not isinstance(default_environment, str) or not default_environment.strip():

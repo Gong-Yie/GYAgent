@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from threading import RLock
 from typing import Callable, TypeVar
 
@@ -16,6 +18,7 @@ from self_cognition.runtime.run_context import RunContext
 
 
 T = TypeVar("T")
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +53,10 @@ class ModelRouter:
         failure_cooldown: timedelta = timedelta(seconds=30),
         max_failure_cooldown: timedelta = timedelta(minutes=15),
         clock: Clock = SYSTEM_CLOCK,
+        health_snapshot_sink: Callable[
+            [tuple[dict[str, object], ...]], None
+        ]
+        | None = None,
     ) -> None:
         if failure_cooldown <= timedelta(0):
             raise ValueError("failure cooldown must be positive")
@@ -61,6 +68,7 @@ class ModelRouter:
         self._failure_cooldown = failure_cooldown
         self._max_failure_cooldown = max_failure_cooldown
         self._clock = clock
+        self._health_snapshot_sink = health_snapshot_sink
         for registration in registrations:
             self.register(registration)
 
@@ -142,13 +150,22 @@ class ModelRouter:
                     degraded_until=now + self._cooldown_for(failures),
                     last_failure_at=now,
                 )
+        self._emit_health_snapshot()
 
     def mark_healthy(self, provider_id: str, task: str) -> None:
         now = self._clock.now()
+        recovered = False
         with self._lock:
             keys = self._matching_keys(provider_id, task)
             for key in keys:
                 item = self._registrations[key]
+                if (
+                    not item.healthy
+                    or item.degraded_reason is not None
+                    or item.consecutive_failures != 0
+                    or item.degraded_until is not None
+                ):
+                    recovered = True
                 self._registrations[key] = replace(
                     item,
                     healthy=True,
@@ -157,10 +174,101 @@ class ModelRouter:
                     degraded_until=None,
                     last_success_at=now,
                 )
+        if recovered:
+            self._emit_health_snapshot()
 
     def statuses(self) -> tuple[ModelRegistration, ...]:
         with self._lock:
             return tuple(self._registrations[key] for key in sorted(self._registrations))
+
+    def health_snapshot(self) -> tuple[dict[str, object], ...]:
+        with self._lock:
+            return self._snapshot_health_locked()
+
+    def restore_health(
+        self,
+        entries: Iterable[Mapping[str, object]],
+    ) -> None:
+        now = self._clock.now()
+        with self._lock:
+            for entry in entries:
+                try:
+                    task = entry["task"]
+                    provider_id = entry["provider_id"]
+                    if not isinstance(task, str) or not isinstance(
+                        provider_id, str
+                    ):
+                        continue
+                    key = (task, provider_id)
+                    item = self._registrations.get(key)
+                    if item is None:
+                        continue
+                    healthy = _require_bool(
+                        entry.get("healthy"), "healthy"
+                    )
+                    failures = _require_non_negative_int(
+                        entry.get("consecutive_failures", 0),
+                        "consecutive_failures",
+                    )
+                    degraded_until = _optional_datetime(
+                        entry.get("degraded_until")
+                    )
+                    if not healthy and degraded_until is None:
+                        degraded_until = now + self._failure_cooldown
+                    self._registrations[key] = replace(
+                        item,
+                        healthy=healthy,
+                        degraded_reason=_optional_string(
+                            entry.get("degraded_reason")
+                        ),
+                        consecutive_failures=failures,
+                        degraded_until=degraded_until,
+                        last_failure_at=_optional_datetime(
+                            entry.get("last_failure_at")
+                        ),
+                        last_success_at=_optional_datetime(
+                            entry.get("last_success_at")
+                        ),
+                    )
+                except (KeyError, TypeError, ValueError):
+                    continue
+
+    def _snapshot_health_locked(self) -> tuple[dict[str, object], ...]:
+        return tuple(
+            {
+                "task": self._registrations[key].task,
+                "provider_id": self._registrations[key].provider_id,
+                "healthy": self._registrations[key].healthy,
+                "degraded_reason": self._registrations[key].degraded_reason,
+                "consecutive_failures": self._registrations[
+                    key
+                ].consecutive_failures,
+                "degraded_until": _isoformat_datetime(
+                    self._registrations[key].degraded_until
+                ),
+                "last_failure_at": _isoformat_datetime(
+                    self._registrations[key].last_failure_at
+                ),
+                "last_success_at": _isoformat_datetime(
+                    self._registrations[key].last_success_at
+                ),
+            }
+            for key in sorted(self._registrations)
+        )
+
+    def _emit_health_snapshot(self) -> None:
+        sink = self._health_snapshot_sink
+        if sink is None:
+            return
+        with self._lock:
+            snapshot = self._snapshot_health_locked()
+        try:
+            sink(snapshot)
+        except Exception:
+            logger.warning(
+                "failed to persist model health snapshot",
+                exc_info=True,
+            )
 
     def _cooldown_for(self, failures: int) -> timedelta:
         exponent = min(max(failures - 1, 0), 16)
@@ -175,6 +283,7 @@ class ModelRouter:
             keys = self._matching_keys(provider_id, task)
             for key in keys:
                 self._registrations[key] = replace(self._registrations[key], **changes)
+        self._emit_health_snapshot()
 
     def _matching_keys(self, provider_id: str, task: str | None) -> list[tuple[str, str]]:
         keys = [
@@ -391,3 +500,38 @@ class RoutedProactivityModel:
             lambda: registration.model.express(intention, workspace, context),
             attempts=1,
         )
+
+
+def _require_bool(value: object, name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be a boolean")
+    return value
+
+
+def _require_non_negative_int(value: object, name: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+    return value
+
+
+def _optional_string(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("value must be a string or null")
+    return value
+
+
+def _isoformat_datetime(value: datetime | None) -> str | None:
+    return None if value is None else value.isoformat()
+
+
+def _optional_datetime(value: object) -> datetime | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("datetime must be an ISO string or null")
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
