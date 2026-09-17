@@ -91,7 +91,18 @@ def test_unknown_and_hypothesis_probes_use_epistemic_markers() -> None:
         target_fields=(),
     )
 
+    cannot_determine = evaluate_probe(
+        _probe("exec.unknown"),
+        status="succeeded",
+        error_type=None,
+        answer="我没有找到记录，所以无法确定。",
+        evidence_count=0,
+        sources=(),
+        target_fields=(),
+    )
+
     assert unknown["passed"] is True
+    assert cannot_determine["passed"] is True
     assert hypothesis["passed"] is True
     assert overly_certain["passed"] is False
 

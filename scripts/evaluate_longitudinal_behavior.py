@@ -28,6 +28,7 @@ from self_cognition.core.time import SYSTEM_CLOCK
 from self_cognition.observability.longitudinal import (
     PROBES,
     SETUP_MESSAGES,
+    LongitudinalProbe,
     evaluate_probe,
     summarize_criteria,
 )
@@ -112,7 +113,7 @@ def _wait_for_dialogue(
 ) -> dict[str, object]:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
-        events = container.event_store.read_by_subject(subject)
+        events = container.event_store.read_by_mind(subject.mind)
         terminal = next(
             (
                 event
@@ -205,11 +206,12 @@ def _publish_and_wait(
 def _run_probe_suite(
     container,
     subject: SubjectScope,
+    probes: tuple[LongitudinalProbe, ...],
     phase: str,
     timeout_seconds: float,
 ) -> tuple[dict[str, object], ...]:
     results: list[dict[str, object]] = []
-    for probe in PROBES:
+    for probe in probes:
         response = _publish_and_wait(
             container,
             subject,
@@ -237,6 +239,16 @@ def _run_probe_suite(
     return tuple(results)
 
 
+def _select_probes(raw_ids: str) -> tuple[LongitudinalProbe, ...]:
+    normalized = raw_ids.strip()
+    if not normalized or normalized.lower() == "all":
+        return PROBES
+    selected = {
+        item.strip() for item in normalized.split(",") if item.strip()
+    }
+    return tuple(probe for probe in PROBES if probe.probe_id in selected)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Longitudinal real-model behavior evaluator"
@@ -248,6 +260,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--user", default="longitudinal-user")
     parser.add_argument("--data-dir", type=Path, default=None)
     parser.add_argument("--dotenv", type=Path, default=PROJECT_ROOT / ".env")
+    parser.add_argument("--probe-ids", default="all")
+    parser.add_argument("--skip-final-probes", action="store_true")
+    parser.add_argument("--setup-limit", type=int, default=None)
     args = parser.parse_args(argv)
 
     if args.minutes < 0:
@@ -256,6 +271,11 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("interval and snapshot must be positive")
     if args.probe_timeout_seconds <= 0:
         raise ValueError("probe timeout must be positive")
+    if args.setup_limit is not None and args.setup_limit < 1:
+        raise ValueError("setup limit must be positive")
+    selected_probes = _select_probes(args.probe_ids)
+    if not selected_probes:
+        raise ValueError("no probes selected")
 
     if args.data_dir is None:
         run_root = Path(tempfile.mkdtemp(prefix="sc-longitudinal-"))
@@ -299,7 +319,7 @@ def main(argv: list[str] | None = None) -> int:
             raise RuntimeError("application lifecycle did not become ready")
 
         setup_results = []
-        for message in SETUP_MESSAGES:
+        for message in SETUP_MESSAGES[: args.setup_limit]:
             response = _publish_and_wait(
                 container,
                 subject,
@@ -316,6 +336,7 @@ def main(argv: list[str] | None = None) -> int:
             _run_probe_suite(
                 container,
                 subject,
+                selected_probes,
                 "initial",
                 args.probe_timeout_seconds,
             )
@@ -358,22 +379,27 @@ def main(argv: list[str] | None = None) -> int:
                 break
             time.sleep(1.0)
 
-        final_probe_results = list(
-            _run_probe_suite(
-                container,
-                subject,
-                "final",
-                args.probe_timeout_seconds,
+        final_probe_results: list[dict[str, object]] = []
+        if not args.skip_final_probes:
+            final_probe_results = list(
+                _run_probe_suite(
+                    container,
+                    subject,
+                    selected_probes,
+                    "final",
+                    args.probe_timeout_seconds,
+                )
             )
-        )
-        for result in final_probe_results:
-            _append_jsonl(raw_path, {"kind": "probe", **result})
+            for result in final_probe_results:
+                _append_jsonl(raw_path, {"kind": "probe", **result})
         probe_results.extend(final_probe_results)
         response_calls = len(setup_results) + len(probe_results)
         response_failures = sum(
             1
-            for item in (*setup_results, *probe_results)
+            for item in setup_results
             if item.get("status") != "succeeded"
+        ) + sum(
+            1 for item in probe_results if not item.get("passed")
         )
 
         final_elapsed = time.monotonic() - start
@@ -402,6 +428,9 @@ def main(argv: list[str] | None = None) -> int:
         "interval_seconds": args.interval_seconds,
         "snapshot_seconds": args.snapshot_seconds,
         "events_sent": sent,
+        "probe_ids": [probe.probe_id for probe in selected_probes],
+        "setup_limit": args.setup_limit,
+        "skip_final_probes": args.skip_final_probes,
         "fast_publish_errors": errors,
         "response_calls": response_calls,
         "response_failures": response_failures,
@@ -412,7 +441,8 @@ def main(argv: list[str] | None = None) -> int:
         "max_backlog": max_backlog,
         "final_backlog": len(container.event_bus.backlog()),
         "dead_letters": len(container.event_bus.dead_letters()),
-        "final_health": container.health.check().as_dict(),
+        "final_health": final_snapshot["health"],
+        "final_ready_before_stop": bool(final_snapshot["health"]["ready"]),
         "ended_at": datetime.now(timezone.utc).isoformat(),
     }
     _write_json(summary_path, summary)
