@@ -227,3 +227,8 @@ def test_model_health_store_ignores_corrupt_snapshot(tmp_path: Path) -> None:
     store.path.write_text("{not-json", encoding="utf-8")
 
     assert store.load() == ()
+
+def test_application_settings_model_timeout_is_configurable() -> None:
+    assert ApplicationSettings(model_timeout_seconds=90.0).model_timeout_seconds == 90.0
+    with pytest.raises(ValueError, match="model timeout must be positive"):
+        ApplicationSettings(model_timeout_seconds=0)

@@ -275,6 +275,7 @@ def build_container(
                 api_key,
                 model,
                 base_url=base_url,
+                timeout_seconds=resolved_settings.model_timeout_seconds,
                 max_output_tokens=resolved_settings.dialogue_max_output_tokens,
                 temperature=resolved_settings.model_temperature,
             )
@@ -283,6 +284,7 @@ def build_container(
                 api_key,
                 model,
                 base_url=base_url,
+                timeout_seconds=resolved_settings.model_timeout_seconds,
                 max_output_tokens=resolved_settings.cognition_max_output_tokens,
                 temperature=resolved_settings.model_temperature,
             )
@@ -291,6 +293,7 @@ def build_container(
                 api_key,
                 model,
                 base_url=base_url,
+                timeout_seconds=resolved_settings.model_timeout_seconds,
                 max_output_tokens=resolved_settings.cognition_max_output_tokens,
                 temperature=resolved_settings.model_temperature,
             )
@@ -299,6 +302,7 @@ def build_container(
                 api_key,
                 model,
                 base_url=base_url,
+                timeout_seconds=resolved_settings.model_timeout_seconds,
                 max_output_tokens=resolved_settings.cognition_max_output_tokens,
                 temperature=resolved_settings.model_temperature,
             )
@@ -307,6 +311,7 @@ def build_container(
                 api_key,
                 model,
                 base_url=base_url,
+                timeout_seconds=resolved_settings.model_timeout_seconds,
                 max_output_tokens=resolved_settings.cognition_max_output_tokens,
                 assessment_kind="metacognition",
                 temperature=resolved_settings.model_temperature,
@@ -316,6 +321,7 @@ def build_container(
                 api_key,
                 model,
                 base_url=base_url,
+                timeout_seconds=resolved_settings.model_timeout_seconds,
                 max_output_tokens=resolved_settings.cognition_max_output_tokens,
                 assessment_kind="affect",
                 temperature=resolved_settings.model_temperature,
@@ -325,6 +331,7 @@ def build_container(
                 api_key,
                 model,
                 base_url=base_url,
+                timeout_seconds=resolved_settings.model_timeout_seconds,
                 max_output_tokens=resolved_settings.cognition_max_output_tokens,
                 assessment_kind="semantic",
                 temperature=resolved_settings.model_temperature,
@@ -861,6 +868,7 @@ def _configured_model_for_task(
             api_key,
             provider.model,
             base_url=base_url,
+            timeout_seconds=settings.model_timeout_seconds,
             max_output_tokens=settings.dialogue_max_output_tokens,
             temperature=settings.model_temperature,
         )
@@ -869,6 +877,7 @@ def _configured_model_for_task(
             api_key,
             provider.model,
             base_url=base_url,
+            timeout_seconds=settings.model_timeout_seconds,
             max_output_tokens=settings.cognition_max_output_tokens,
             temperature=settings.model_temperature,
         )
@@ -877,6 +886,7 @@ def _configured_model_for_task(
             api_key,
             provider.model,
             base_url=base_url,
+            timeout_seconds=settings.model_timeout_seconds,
             max_output_tokens=settings.cognition_max_output_tokens,
             temperature=settings.model_temperature,
         )
@@ -885,6 +895,7 @@ def _configured_model_for_task(
             api_key,
             provider.model,
             base_url=base_url,
+            timeout_seconds=settings.model_timeout_seconds,
             max_output_tokens=settings.cognition_max_output_tokens,
             temperature=settings.model_temperature,
         )
