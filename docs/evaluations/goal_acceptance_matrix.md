@@ -1,7 +1,7 @@
 # `goal.md` 验收矩阵
 
-> 更新日期：2026-09-16
-> 当前基线：`main = 08a9f7e`
+> 更新日期：2026-09-17
+> 当前基线：`main = 70326dc`
 > 离线验证：`505 passed, 2 deselected`
 > 真实模型：`live_openai` 此前 2 项通过
 > 真实双回路：最终 60 分钟 20 个事件、20/20 对话成功、`dialogue.failed=0`、backlog 峰值 1/最终 0、死信 0、worker 无错误、stop 前 health ready=true；`failure_classification` 仅 1 次 semantic provider timeout（真实双回路为历史证据，基线 02e1ed6；本轮 WIP 未重跑 live/60 分钟）
@@ -99,7 +99,7 @@
 | 部分满足 | 3 |
 | 未满足 | 0 |
 
-## 真实双回路最终结果（2026-09-16）
+## 真实双回路最终结果（2026-09-17）
 
 ### 最终 60 分钟（`main = 02e1ed6`）
 
@@ -121,7 +121,7 @@
 - 该 run 的唯一 `dialogue.failed` 是合理的 `GroundingRejected`：回答新增了未被证据支持的推断“听起来是平平稳稳的一天”；claim 级审查按要求拒绝，不作为系统故障。
 - 另一次 60 分钟预跑中定位到 input evidence 与低置信 workspace item 共享证据时的 grounding 误伤，已在 `02e1ed6` 修复并加单元测试；最终 60 分钟无 generate 失败且 `dialogue.failed=0`。
 
-## 阶段 41 可靠性验证（2026-09-16）
+## 阶段 41 可靠性验证（2026-09-17）
 
 - 真实子进程强杀：`scripts/reliability_probe.py kill-pending` 后重启，pending event 被恢复、入队并成功 drain；
 - 真实子进程强杀：`kill-running` 后重启，未完成 RunRecord 被明确标记 `INTERRUPTED`；
@@ -129,68 +129,77 @@
 - 跨重启：`EmotionState`、`MoodState`、`ProactiveIntention`、Mailbox 在重启后保持一致；
 - 覆盖测试：`test/test_phase41_reliability.py`。
 
-## 多进程 worker 与本地延迟指标（2026-09-16）
+## 多进程 worker 与本地延迟指标（2026-09-17）
 
 - 多进程 worker：3 个进程按 subject shard 并发 drain 9 个事件；每个 subject 的 3 个事件保序处理，state.version=3，恰好 9 条 state.reduced，无 pending/dead letters；
 - 并发修复：`FileEventStore` 增加跨进程 append 锁，`append_many` 不再用进程内旧缓存全量重写事件日志；`FileProcessJournal` 使用 `BlockingFileLock`，避免 recovery/claim 竞争直接失败；
 - 延迟采样（20 samples）：event_ingest p50/p95/p99 = 0.0174/0.0196/0.0196s；query = 0.00122/0.00144/0.00145s；state_write = 0.00432/0.00495/0.00510s；
 - 覆盖：`scripts/measure_local_latency.py`、`test/test_local_latency_metrics.py`、`test/test_phase41_reliability.py` 多进程用例。
 
-## 阶段 43.1 provenance 索引（2026-09-16）
+## 阶段 43.1 provenance 索引（2026-09-17）
 
 - 新增 `core/provenance.py`：节点 EVENT / CONTRIBUTION / MEMORY / EMOTION / MOOD，边 CAUSED_BY / DERIVED_FROM / SUPERSEDES；
 - 新增 `indexes/provenance.py` 与 `FileProvenanceStore`：可从事件日志与记忆文件重建，支持删除后重建和 `source_events` 追溯；
 - 集成测试：事件、贡献、记忆、快速情绪、心境均可入图，记忆/情绪链可回到源事件；
 - 覆盖：`test/test_provenance_graph.py`。
 
-## 阶段 43.2 provenance 生命周期（2026-09-16）
+## 阶段 43.2 provenance 生命周期（2026-09-17）
 
 - relationship / narrative / action request / action decision / action result / tool result 节点入图；
 - provenance store 维护 manifest，支持 `rebuild_all`、`delete_all`、`verify`，并清理 stale graph；
 - 修复多进程 state 读写竞争：`FileStateRepository` 增加按 subject 跨进程锁，避免 PermissionError 重试造成重复 `state.reduced`；
 - 覆盖：`test/test_provenance_graph.py` 与 `test/test_phase41_reliability.py` 多进程用例。
 
-## 阶段 43.3 本地向量索引（2026-09-16）
+## 阶段 43.3 本地向量索引（2026-09-17）
 
 - 新增确定性 hashing 向量索引，覆盖最新 memory records；只用于检索候选收窄，不作为事实、关系、因果或能力证据；
 - `VectorIndexService` 支持 `rebuild`、`rebuild_all`、`delete`、`delete_all`、`verify` 和 `search`；
 - 删除全部向量索引后可重建；记忆删除后索引自动失效并在查询时重建，不再返回被删记忆；
 - 覆盖：`test/test_vector_index.py`。
 
-## 阶段 43.4 非事件证据 provenance（2026-09-16）
+## 阶段 43.4 非事件证据 provenance（2026-09-17）
 
 - 所有非事件 EvidenceRef（system prior、file fragment、tool result 等）生成 EVIDENCE 节点；
 - EVIDENCE 节点保留 source_kind、source_ref、locator、reliability，并从 contribution/memory/relationship/narrative/emotion/mood/action 建 DERIVED_FROM 边；
 - action decision 中无法解析为事件的 evidence UUID 生成 placeholder EVIDENCE 节点，不再丢边；
 - 覆盖：`test/test_provenance_graph.py`。
 
-## 多 provider 模型配置与健康历史（2026-09-16）
+## 多 provider 模型配置与健康历史（2026-09-17）
 
 - `main = 6e43a12`：新增 `config/models.json` schema、`SC_MODELS_CONFIG`/`SC_ENV` 多环境选择、`ModelRouter` configured provider fallback、configured proactive 接线和输出 token 393216 上限校验；
 - 新增 `GET /health/history?limit=1..500`、`HealthHistory(max_entries=500)` 和 WebUI 健康页，展示 ready、backlog、dead_letters、models/modules 降级原因；
 - 离线验证：`487 passed, 2 deselected`；
 - 边界：健康历史为进程内有界内存历史，重启后丢失；configured fallback 的自动化验证覆盖注册优先级与 primary degraded 后 next-call 选择 backup，未重跑真实模型/长期双回路。
 
-## 模型健康恢复与失败链（2026-09-16）
+## 模型健康恢复与失败链（2026-09-17）
 
 - `main = 85d0d01`：新增 `FileModelHealthStore` 有界诊断快照，`ModelRouter` 支持 `health_snapshot` / `restore_health`；provider 降级状态与冷却跨进程恢复，正常成功不额外落盘；
 - 失败链：`RunRepository.read_recent_failures`、`GET /health/failures?limit=1..200` 和 WebUI 最近失败链，展示 status/kind/run_id/error_type/termination_reason；
 - 离线验证：`492 passed, 2 deselected`；
 - 边界：健康快照属于 cache/诊断数据，可清理、可忽略损坏，不作为事件、状态或治理权威。
 
-## 假设认知、健康持久化与高风险工具（2026-09-16）
+## 假设认知、健康持久化与高风险工具（2026-09-17）
 
 - `main = c58e300`：新增 `CognitionType.HYPOTHESIS` 和 Workspace 类型传递；规则表达、grounding 和语义 prompt 均区分假设与确定事实；
 - 健康历史新增 `FileHealthHistoryStore`，健康快照跨容器重启恢复；新增 Edge headless 真实浏览器测试渲染 `?view=health` 健康页；
 - 新增真实本地不可逆工具 `workspace.write_file`：不可逆副作用、确认要求、审批审计、执行一次、失败标准结果；
 - 离线验证：`501 passed, 2 deselected`。
 
-## 长期行为评测 harness（2026-09-16）
+## 长期行为评测 harness（2026-09-17）
 
-- `main = 08a9f7e`：新增 `scripts/evaluate_longitudinal_behavior.py`，包含身份、记忆、未知、假设探针，采集 Workspace 来源、响应、健康、backlog、dead-letter 和指标，输出 `summary.json` / `raw.jsonl`；
+- `main = 70326dc`：新增 `scripts/evaluate_longitudinal_behavior.py`，包含身份、记忆、未知、假设探针，采集 Workspace 来源、响应、健康、backlog、dead-letter 和指标，输出 `summary.json` / `raw.jsonl`；
 - `src/self_cognition/observability/longitudinal.py` 提供可离线单测的评分逻辑；
 - 离线验证：`505 passed, 2 deselected`；
 - 尚未执行 live 60 分钟采集，因此 COG-02 / COG-03 / EXEC-02 仍保持部分满足，等待真实模型报告评审。
+
+## Live smoke（2026-09-17）
+
+- 命令：python scripts/evaluate_longitudinal_behavior.py --minutes 0 --probe-timeout-seconds 180 --probe-ids identity.role,exec.unknown --skip-final-probes --setup-limit 1；
+- 结果：1 个 setup + 2 个探针，response_failures=0；
+- COG-02 identity.role：通过，Workspace 选中 identity.role，evidence_count=2；
+- EXEC-02 exec.unknown：通过，回答明确保持未知；
+- 运行可靠性：final_ready_before_stop=true，max_backlog=0，final_backlog=0，dead_letters=0，worker_error_type=null；
+- 该 smoke 只覆盖身份角色和未知表达两个探针；COG-02 / COG-03 / EXEC-02 仍为部分满足，待完整 60 分钟探针批次。
 
 ## 当前仍未收口的验证项
 
