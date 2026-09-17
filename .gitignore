@@ -5,6 +5,7 @@ __pycache__/
 venv/
 .env
 data/
+/data-personal/
 build/
 dist/
 *.egg-info/

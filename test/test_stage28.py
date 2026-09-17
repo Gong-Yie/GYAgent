@@ -16,7 +16,8 @@ from self_cognition.tools.executor import FileReadToolExecutor, ToolExecutionPol
 from self_cognition.core.ids import new_correlation_id, new_run_id
 from self_cognition.runtime.run_context import RunContext
 from self_cognition.core.runs import RunKind
-from self_cognition.interfaces.http.server import _handle
+from self_cognition.core.evidence import EvidenceRef, EvidenceSourceKind
+from self_cognition.interfaces.http.server import _handle, _jsonable
 from self_cognition.interfaces.http import create_server
 from self_cognition.executive.dialogue.rule_based import RuleBasedDialogueModel
 from self_cognition.workers.cognition import CognitionWorker
@@ -125,3 +126,23 @@ def test_http_cancel_checks_subject_before_side_effects(tmp_path, mind_id, subje
     assert context.is_cancelled is allowed
     if not allowed:
         assert stored == original
+
+def test_http_jsonable_serializes_evidence_datetime() -> None:
+    now = datetime.now(timezone.utc)
+    evidence = EvidenceRef(
+        uuid4(),
+        EvidenceSourceKind.EVENT,
+        "event-1",
+        DataScope(SubjectScope.legacy_user("user-1"), DisclosureScope.PRIVATE),
+        observed_at=now,
+        reliability=1.0,
+    )
+
+    encoded = json.dumps(
+        {"evidence_refs": [_jsonable(evidence)]},
+        ensure_ascii=False,
+        default=_jsonable,
+    )
+    payload = json.loads(encoded)
+
+    assert payload["evidence_refs"][0]["observed_at"] == now.isoformat()

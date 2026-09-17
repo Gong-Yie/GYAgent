@@ -1,4 +1,4 @@
-const state={view:'chat',subject_id:'user-1'};
+const state={view:'chat',subject_id:'user-1',messages:[],evidence:[]};
 const view=document.querySelector('#view');
 const titles={chat:['CURRENT SESSION','对话'],mailbox:['PROACTIVE MAILBOX','收件箱'],emotion:['AFFECT & MOOD','情绪/心境'],memories:['LONG-TERM MEMORY','记忆'],runs:['RUNTIME TRACE','运行'],approvals:['HUMAN CONFIRMATION','批准'],relationships:['RELATIONSHIP MAP','关系'],conflicts:['OPEN CONFLICTS','冲突'],health:['RUNTIME HEALTH','健康与降级'],usage:['RUNTIME USAGE','用量'],settings:['CONTROL SURFACE','设置']};
 const api=async(path,options)=>{const response=await fetch(path,options);const data=await response.json();if(!response.ok)throw new Error(data.error||data.error_type||'请求失败');return data};
@@ -23,8 +23,41 @@ async function renderEmotion(){
   }catch(error){document.querySelector('#emotion-list').innerHTML=`<div class="empty">${esc(error.message)}</div>`}
 }
 function setView(name){if(!titles[name])name='chat';state.view=name;document.querySelectorAll('.nav-item').forEach(item=>item.classList.toggle('active',item.dataset.view===name));document.querySelector('#view-kicker').textContent=titles[name][0];document.querySelector('#view-title').textContent=titles[name][1];({chat:renderChat,mailbox:renderMailbox,emotion:renderEmotion,memories:renderMemories,runs:renderRuns,approvals:renderApprovals,relationships:renderRelationships,conflicts:renderConflicts,health:renderHealth,usage:renderUsage,settings:renderSettings}[name])()}
-function renderChat(){view.innerHTML='<div class="chat-grid"><div class="panel"><h2>当前对话</h2><div class="conversation" id="conversation"><div class="empty">从一个具体问题开始，回答会保留可追溯来源。</div></div><div class="composer"><textarea id="message" placeholder="写下你想说的内容" aria-label="消息"></textarea><button class="button" id="send">发送</button></div></div><aside class="panel evidence"><h2>证据链</h2><div id="evidence" class="evidence-list"><div class="empty">发送消息后显示来源。</div></div></aside></div>';document.querySelector('#send').onclick=send;document.querySelector('#message').onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send()}}}
-async function send(){const input=document.querySelector('#message');const text=input.value.trim();if(!text)return;const conversation=document.querySelector('#conversation');if(conversation.querySelector('.empty'))conversation.innerHTML='';conversation.insertAdjacentHTML('beforeend',`<div class="bubble user">${esc(text)}</div>`);input.value='';document.querySelector('#send').disabled=true;try{const data=await api('/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({subject_id:state.subject_id,message:text})});if(data.response)conversation.insertAdjacentHTML('beforeend',`<div class="bubble assistant">${esc(data.response)}</div>`);document.querySelector('#evidence').innerHTML=(data.evidence_refs||[]).map(item=>`<div class="evidence-item"><strong>${esc(item.source_kind)}</strong>${esc(item.source_ref)}<br><span class="muted">${esc(item.locator)}</span></div>`).join('')||'<div class="empty">没有可展示的来源。</div>'}catch(error){conversation.insertAdjacentHTML('beforeend',`<div class="bubble assistant">${esc(error.message)}</div>`)}finally{document.querySelector('#send').disabled=false}}
+function renderChat(){
+  const messages=state.messages||[];
+  const evidence=state.evidence||[];
+  const conversation=messages.length?messages.map(item=>'<div class="bubble '+esc(item.role)+'">'+esc(item.text)+'</div>').join(''):'<div class="empty">从一个具体问题开始，回答会保留可追溯来源。</div>';
+  const evidenceHtml=evidence.length?evidence.map(item=>'<div class="evidence-item"><strong>'+esc(item.source_kind)+'</strong>'+esc(item.source_ref)+'<br><span class="muted">'+esc(item.locator)+'</span></div>').join(''):'<div class="empty">发送消息后显示来源。</div>';
+  view.innerHTML='<div class="chat-grid"><div class="panel"><h2>当前对话</h2><div class="conversation" id="conversation">'+conversation+'</div><div class="composer"><textarea id="message" placeholder="写下你想说的内容" aria-label="消息"></textarea><button class="button" id="send">发送</button></div></div><aside class="panel evidence"><h2>证据链</h2><div id="evidence" class="evidence-list">'+evidenceHtml+'</div></aside></div>';
+  document.querySelector('#send').onclick=send;
+  document.querySelector('#message').onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send()}};
+}
+async function send(){
+  const input=document.querySelector('#message');
+  const button=document.querySelector('#send');
+  if(!input||button.disabled)return;
+  const text=input.value.trim();
+  if(!text)return;
+  state.messages=state.messages||[];
+  state.messages.push({role:'user',text:text});
+  input.value='';
+  renderChat();
+  const activeButton=document.querySelector('#send');
+  if(activeButton)activeButton.disabled=true;
+  try{
+    const data=await api('/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({subject_id:state.subject_id,message:text})});
+    if(data.response)state.messages.push({role:'assistant',text:data.response});
+    if(data.evidence_refs)state.evidence=data.evidence_refs;
+  }catch(error){
+    state.messages.push({role:'assistant',text:error.message});
+  }finally{
+    if(state.view==='chat'){
+      renderChat();
+      const finishedButton=document.querySelector('#send');
+      if(finishedButton)finishedButton.disabled=false;
+    }
+  }
+}
 async function renderMemories(){view.innerHTML='<div class="panel"><h2>记忆记录</h2><div id="memory-list" class="memory-list"><div class="empty">读取中...</div></div></div>';try{const data=await api(`/memories?subject_id=${encodeURIComponent(state.subject_id)}`);document.querySelector('#memory-list').innerHTML=(data.memories||[]).map(item=>`<article class="memory-card"><div><strong>${esc(item.content)}</strong><span class="muted">${esc(item.memory_id)}</span></div><span class="tag">${esc(item.memory_type)}</span></article>`).join('')||'<div class="empty">还没有记忆。</div>'}catch(error){document.querySelector('#memory-list').innerHTML=`<div class="empty">${esc(error.message)}</div>`}}
 async function renderRuns(){view.innerHTML='<div class="panel"><h2>运行记录</h2><div id="run-list" class="run-list"><div class="empty">读取中...</div></div></div>';try{const data=await api(`/runs?subject_id=${encodeURIComponent(state.subject_id)}`);document.querySelector('#run-list').innerHTML=(data.runs||[]).map(item=>`<article class="run-card"><div><strong>${esc(item.kind)}</strong><span class="muted">${esc(item.run_id)}</span></div><span class="tag">${esc(item.status)}</span></article>`).join('')||'<div class="empty">还没有运行记录。</div>'}catch(error){document.querySelector('#run-list').innerHTML=`<div class="empty">${esc(error.message)}</div>`}}
 async function renderSettings(){view.innerHTML='<div class="panel"><h2>用户控制</h2><div id="settings" class="kv"><div>状态</div><div>读取中...</div></div></div>';try{const data=await api(`/settings?subject_id=${encodeURIComponent(state.subject_id)}`);const controls=data.controls||{};document.querySelector('#settings').innerHTML=Object.entries(controls).map(([key,value])=>`<div>${esc(key)}</div><div><pre>${esc(JSON.stringify(value,null,2))}</pre></div>`).join('')}catch(error){document.querySelector('#settings').innerHTML=`<div class="empty">${esc(error.message)}</div>`}}

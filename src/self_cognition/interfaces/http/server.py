@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -384,6 +384,8 @@ def _jsonable(value: Any) -> Any:
         return {field: _jsonable(getattr(value, field)) for field in value.__dataclass_fields__}
     if isinstance(value, UUID):
         return str(value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
     return value
 
 
