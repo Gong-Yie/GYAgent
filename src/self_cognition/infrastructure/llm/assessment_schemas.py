@@ -84,6 +84,11 @@ ASSESSMENT_INSTRUCTIONS = {
         "valence and uncertainty. goal_ids must reference supplied goals or be empty. "
         "Use the supplied assessment_time exactly. Default half_life_seconds=3600 and "
         "active_threshold=0.1. Do not claim real feelings or change values or permissions. "
+        "Stable likes, dislikes, preferences and object attitudes are not transient affect: "
+        "do not create affect.current for them; semantic preference extraction owns those. "
+        "Only assess short-lived emotional reactions caused by events, goal changes, "
+        "relationship changes or interactions. Cause must describe the eliciting event, "
+        "not simply repeat target or scope. "
         "For user.message assess the user's stated emotion, not the Agent's. For "
         "cognition.assessment_requested assess the Agent's response to the source event."
     ),

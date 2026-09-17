@@ -11,6 +11,7 @@ from self_cognition.core.affect import (
     decay_assessment,
     decay_emotion,
     decay_mood,
+    is_preference_shaped_affect,
 )
 from self_cognition.core.errors import ContractValidationError
 from self_cognition.core.protocols import StateRepository
@@ -33,6 +34,8 @@ class AffectViewService:
                 content = self._reaction(entry.value, as_of)
                 kind = "reaction"
             elif field_name.startswith("affect.current."):
+                if is_preference_shaped_affect(field_name, entry.value):
+                    continue
                 content = decay_assessment(entry.value, as_of)
                 kind = "assessment"
             elif field_name.startswith("mood."):

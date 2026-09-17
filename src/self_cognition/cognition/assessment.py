@@ -1,7 +1,10 @@
 from dataclasses import dataclass, field, replace
 from typing import Literal
 
-from self_cognition.core.affect import AffectAssessment
+from self_cognition.core.affect import (
+    AffectAssessment,
+    is_preference_shaped_affect,
+)
 from self_cognition.core.cognition import CognitionContextQuery, CognitionRequest
 from self_cognition.core.contributions import (
     CognitiveContribution,
@@ -119,6 +122,7 @@ def _build_assessment_contributions(
     contributions: list[CognitiveContribution] = []
     seen: set[str] = set()
     for candidate in result.candidates:
+        preference_shaped = False
         if any(
             str(ref.evidence_id) not in candidate.evidence_ids for ref in source_refs
         ):
@@ -163,6 +167,10 @@ def _build_assessment_contributions(
                     )
                 value = affect.to_state_value()
                 cognition_type = CognitionType.AFFECT
+                preference_shaped = is_preference_shaped_affect(
+                    candidate.target_field,
+                    value,
+                )
             else:
                 raise ContractValidationError(
                     "assessment target is outside its module ownership"
@@ -178,6 +186,8 @@ def _build_assessment_contributions(
                 )
         except ContractValidationError as error:
             raise ModelOutputError(str(error)) from error
+        if preference_shaped:
+            continue
         discriminator = f"{candidate.operation.value}:{candidate.target_field}"
         if discriminator in seen:
             raise ModelOutputError("duplicate assessment target in one model result")

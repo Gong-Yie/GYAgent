@@ -1,6 +1,8 @@
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
+from self_cognition.application.affect import AffectViewService
 from self_cognition.core.affect import (
     AffectAssessment,
     EmotionState,
@@ -8,6 +10,14 @@ from self_cognition.core.affect import (
     accumulate_mood,
     decay_emotion,
     decay_mood,
+    is_preference_shaped_affect,
+)
+from self_cognition.core.contributions import CognitionType
+from self_cognition.core.evidence import EvidenceRef
+from self_cognition.core.scopes import DataScope, DisclosureScope, SubjectScope
+from self_cognition.core.state import StateAtom, SubjectState
+from self_cognition.infrastructure.persistence.in_memory_state_repository import (
+    InMemoryStateRepository,
 )
 
 
@@ -107,3 +117,61 @@ def test_mood_accumulates_and_decays():
 
     decayed = decay_mood(updated, later_emotion.assessed_at + timedelta(days=1))
     assert decayed is None or decayed.intensity < updated.intensity
+
+def test_preference_shaped_affect_is_detected() -> None:
+    assert is_preference_shaped_affect(
+        "affect.current.fish_preference",
+        {
+            "emotion": "liking",
+            "valence": "positive",
+            "target": "鱼",
+            "scope": "fish_preference",
+            "cause": "鱼",
+        },
+    )
+    assert not is_preference_shaped_affect(
+        "affect.current.exam",
+        {
+            "emotion": "开心",
+            "valence": "positive",
+            "target": "考试",
+            "scope": "exam",
+            "cause": "考试通过",
+        },
+    )
+
+def test_emotion_view_hides_preference_shaped_affect() -> None:
+    subject = SubjectScope.legacy_user("fish-user")
+    value = {
+        "emotion": "liking",
+        "valence": "positive",
+        "target": "鱼",
+        "scope": "fish_preference",
+        "initial_intensity": 0.69,
+        "assessed_at": NOW.isoformat(),
+        "half_life_seconds": 3600.0,
+        "active_threshold": 0.1,
+        "goal_ids": [],
+        "cause": "鱼",
+    }
+    atom = StateAtom(
+        value=value,
+        cognition_type=CognitionType.AFFECT,
+        confidence=1.0,
+        scope=DataScope(subject, DisclosureScope.PRIVATE),
+        evidence_refs=(EvidenceRef.for_event_id(uuid4(), subject),),
+        contribution_ids=(uuid4(),),
+        created_at=NOW,
+        valid_from=NOW,
+    )
+    state = replace(
+        SubjectState.empty("fish-user"),
+        version=1,
+        entries={"affect.current.fish_preference": atom},
+    )
+    repository = InMemoryStateRepository()
+    repository.replace(state)
+
+    view = AffectViewService(repository).view(subject, as_of=NOW)
+
+    assert view["emotions"] == []

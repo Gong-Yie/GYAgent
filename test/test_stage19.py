@@ -703,3 +703,28 @@ def test_affect_rejects_invalid_dynamics(field: str, value: object) -> None:
     payload[field] = value
     with pytest.raises(ContractValidationError):
         AffectAssessment.from_state_value(payload)
+
+def test_stable_preference_is_not_written_as_affect(tmp_path: Path) -> None:
+    value = appraisal().to_state_value()
+    value.update(
+        {
+            "emotion": "liking",
+            "target": "鱼",
+            "scope": "fish_preference",
+            "cause": "鱼",
+            "valence": "positive",
+            "initial_intensity": 0.69,
+        }
+    )
+    model = FakeAssessmentModel(
+        value,
+        kind="affect",
+        cognition_type=CognitionType.AFFECT,
+        target_field="affect.current.fish_preference",
+    )
+    container = build_container(tmp_path, affect_model=model)
+    origin = message(text="我喜欢吃鱼")
+
+    state = process(container, origin)
+
+    assert not any(field.startswith("affect.") for field in state.entries)

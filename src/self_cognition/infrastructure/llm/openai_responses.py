@@ -191,6 +191,8 @@ class OpenAIResponsesCognitionModel:
             "never present a hypothesis as a fact. Classify every candidate with "
             "cognition_type. Use the canonical target field preferences.study_time for "
             "study-time preferences; do not invent aliases or translate field names. "
+            "Stable likes and dislikes about objects, foods, activities or people belong "
+            "to preferences.<stable-topic> with cognition_type preference, not affect. "
             "Every candidate must cite the supplied event ID. Return only one "
             "JSON object that conforms to the provided schema. Do not return or "
             "repeat the schema definition."

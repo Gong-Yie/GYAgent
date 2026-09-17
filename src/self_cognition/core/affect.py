@@ -8,6 +8,27 @@ from self_cognition.core.errors import ContractValidationError
 
 ACTIVE_INTENSITY_THRESHOLD = 0.1
 
+PREFERENCE_LIKE_EMOTIONS = frozenset(
+    {"liking", "like", "喜欢", "偏好", "preference"}
+)
+
+
+def is_preference_shaped_affect(target_field: str, value: object) -> bool:
+    """Return True for stable preferences misrouted into affect state."""
+
+    if "preference" in target_field.lower():
+        return True
+    if not isinstance(value, dict):
+        return False
+    emotion = str(value.get("emotion", "")).strip().lower()
+    cause = str(value.get("cause", "")).strip().lower()
+    target = str(value.get("target", "")).strip().lower()
+    scope = str(value.get("scope", "")).strip().lower()
+    return (
+        emotion in PREFERENCE_LIKE_EMOTIONS
+        and cause in {target, scope, ""}
+    )
+
 
 def _aware(value: datetime, name: str) -> None:
     if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
