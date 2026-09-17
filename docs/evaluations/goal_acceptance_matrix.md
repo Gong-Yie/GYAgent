@@ -1,8 +1,8 @@
 # `goal.md` 验收矩阵
 
 > 更新日期：2026-09-16
-> 当前基线：`main = c58e300`
-> 离线验证：`501 passed, 2 deselected`
+> 当前基线：`main = 08a9f7e`
+> 离线验证：`505 passed, 2 deselected`
 > 真实模型：`live_openai` 此前 2 项通过
 > 真实双回路：最终 60 分钟 20 个事件、20/20 对话成功、`dialogue.failed=0`、backlog 峰值 1/最终 0、死信 0、worker 无错误、stop 前 health ready=true；`failure_classification` 仅 1 次 semantic provider timeout（真实双回路为历史证据，基线 02e1ed6；本轮 WIP 未重跑 live/60 分钟）
 
@@ -17,8 +17,8 @@
 | ID | 标准 | 状态 | 当前证据与缺口 |
 | --- | --- | --- | --- |
 | COG-01 | 七类认知模块可独立启停、替换和降级 | 已满足 | 模块注册表、健康状态、按主体 disabled_modules 已接入事件处理 |
-| COG-02 | 身份、价值、能力、限制、目标都有版本与证据 | 部分满足 | 领域状态和规则问答已实现；身份、价值、能力在 60 分钟真实运行中的表达仍未专项评测 |
-| COG-03 | 对话稳定使用情景、语义、关系、程序性、叙事记忆 | 部分满足 | Workspace/Retrieval 已接入；真实模型对情景、语义、关系、程序性、叙事记忆的长期使用质量仍受模型波动影响 |
+| COG-02 | 身份、价值、能力、限制、目标都有版本与证据 | 部分满足 | 领域状态和规则问答已实现；身份、价值、能力在 60 分钟真实运行中的表达仍未专项评测；已新增长期评测 harness，待 live 批次证据 |
+| COG-03 | 对话稳定使用情景、语义、关系、程序性、叙事记忆 | 部分满足 | Workspace/Retrieval 已接入；真实模型对情景、语义、关系、程序性、叙事记忆的长期使用质量仍受模型波动影响；已新增长期评测 harness，待 live 批次证据 |
 | COG-04 | 区分事实、推断、偏好、假设、冲突和未知 | 已满足 | 新增 CognitionType.HYPOTHESIS；状态认知类型传递到 WorkspaceItem；规则表达对假设加不确定前缀；grounding 拒绝假设支撑确定 claim；语义模型 prompt 明确 hypothesis 使用边界；单元测试覆盖 |
 | COG-05 | 线索、间隔、干扰、巩固、衰减、不确定表达 | 已满足 | 记忆生命周期测试通过；真实开放域表达仍受限 |
 | COG-06 | 认知结论可追溯到事件或系统先验 | 已满足 | provenance graph 覆盖 event/contribution/memory/relationship/narrative/emotion/mood/action request/decision/result/tool result；非事件 EvidenceRef 生成 EVIDENCE 节点，并保留 source_kind/source_ref/locator/reliability |
@@ -39,7 +39,7 @@
 | ID | 标准 | 状态 | 当前证据与缺口 |
 | --- | --- | --- | --- |
 | EXEC-01 | 回答只使用 Workspace | 已满足 | 规则和真实模型均经 Workspace 入口 |
-| EXEC-02 | 无证据/低置信度不以确定语气表达 | 部分满足 | Review + claim 级字段已实现；最终 60 分钟 20/20 对话成功、0 次 generate 失败；真实模型长期校准仍待持续评测 |
+| EXEC-02 | 无证据/低置信度不以确定语气表达 | 部分满足 | Review + claim 级字段已实现；最终 60 分钟 20/20 对话成功、0 次 generate 失败；真实模型长期校准仍待持续评测；已新增长期评测 harness，待 live 批次证据 |
 | EXEC-03 | 计划包含依赖、预算、失败分支、取消点 | 已满足 | 计划/进度/校验测试通过 |
 | EXEC-04 | 工具动作经过权限、风险、幂等检查 | 已满足 | LLM 动作判断、治理、幂等测试通过 |
 | EXEC-05 | 高风险动作等待确认由 LLM 判断 | 已满足 | 动作确认模型路径已接入；新增真实本地不可逆工具 workspace.write_file，动作模型对其返回 confirmation_required；审批审计、执行一次、幂等，路径越界等失败落为标准 action.result；测试覆盖 |
@@ -185,11 +185,18 @@
 - 新增真实本地不可逆工具 `workspace.write_file`：不可逆副作用、确认要求、审批审计、执行一次、失败标准结果；
 - 离线验证：`501 passed, 2 deselected`。
 
+## 长期行为评测 harness（2026-09-16）
+
+- `main = 08a9f7e`：新增 `scripts/evaluate_longitudinal_behavior.py`，包含身份、记忆、未知、假设探针，采集 Workspace 来源、响应、健康、backlog、dead-letter 和指标，输出 `summary.json` / `raw.jsonl`；
+- `src/self_cognition/observability/longitudinal.py` 提供可离线单测的评分逻辑；
+- 离线验证：`505 passed, 2 deselected`；
+- 尚未执行 live 60 分钟采集，因此 COG-02 / COG-03 / EXEC-02 仍保持部分满足，等待真实模型报告评审。
+
 ## 当前仍未收口的验证项
 
 - 真实浏览器交互测试（当前为 Edge headless 页面渲染冒烟，未做点击流和多浏览器）；
 - 超过 60 分钟的情绪衰减、心境累积、沉默负例和主观体验盲测；
 - 真实外部高风险工具与真实 LLM 动作确认长期评测；
-- 真实模型长期校准、低置信度表达、未知/假设类型的真实使用质量（最终 60 分钟仍有 1 次 semantic provider timeout）；
+- 真实模型长期校准、低置信度表达、未知/假设类型的真实使用质量（最终 60 分钟仍有 1 次 semantic provider timeout）；评测 harness 已就绪，待 live 批次运行；
 - WebUI 中情绪/心境的纠正、导出、删除全流程可视化。
 - configured provider 的真实长期 fallback 行为（当前仅离线/确定性验证）。
