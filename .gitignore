@@ -9,3 +9,9 @@ data/
 build/
 dist/
 *.egg-info/
+
+# 本地运行与测试产物
+/workspace/
+/.tmpcheck/
+/.pytest_tmp_offline/
+/pytest-of-*/
