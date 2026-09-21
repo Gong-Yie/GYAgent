@@ -80,6 +80,12 @@ def _workspace(user: str, *, bored: bool = True) -> WorkspacePacket:
     )
 
 
+def _appraisal(user: str, clock) -> EventEnvelope:
+    """Agent 评估自身反应：subject 是 MIND，不是用户。"""
+    source = EventEnvelope.user_message(user, "好无聊，想找人聊聊", clock=clock)
+    return EventEnvelope.assessment_requested(source, "评估自身情绪")
+
+
 def test_long_term_positive_matrix_is_bounded_and_idempotent():
     clock = FixedClock(T0)
     store = InMemoryEventStore()
@@ -88,16 +94,27 @@ def test_long_term_positive_matrix_is_bounded_and_idempotent():
     subject = SubjectScope.legacy_user(user)
     workspace = _workspace(user)
 
-    first = EventEnvelope.user_message(user, "好无聊，想找人聊聊", clock=clock)
-    assert service.form_boredom_social_motive(first, workspace, _context(clock)) is not None
+    first = _appraisal(user, clock)
+    first_event = service.form_own_emotion_social_motive(
+        first, workspace, _context(clock), target=subject
+    )
+    assert first_event is not None
+    # 情绪来自 Agent 自身：动机归属 mind
+    assert first_event.payload.intention.motive.subject_id == first.subject.mind.mind_id
+    # 主动接触的是用户，不是 Agent 自己
+    assert first_event.payload.intention.target == subject
 
     clock.advance(timedelta(minutes=5))
-    second = EventEnvelope.user_message(user, "好无聊，想找人聊聊", clock=clock)
-    assert service.form_boredom_social_motive(second, workspace, _context(clock)) is None
+    second = _appraisal(user, clock)
+    assert service.form_own_emotion_social_motive(
+            second, workspace, _context(clock), target=subject
+        ) is None
 
     clock.advance(timedelta(minutes=30))
-    third = EventEnvelope.user_message(user, "好无聊，想找人聊聊", clock=clock)
-    assert service.form_boredom_social_motive(third, workspace, _context(clock)) is not None
+    third = _appraisal(user, clock)
+    assert service.form_own_emotion_social_motive(
+            third, workspace, _context(clock), target=subject
+        ) is not None
 
     due = service.consume_due(
         subject,
@@ -143,8 +160,10 @@ def test_long_term_negative_matrix_silences_disabled_proactive_controls():
     subject = SubjectScope.legacy_user(user)
     workspace = _workspace(user)
 
-    event = EventEnvelope.user_message(user, "好无聊，想找人聊聊", clock=clock)
-    assert service.form_boredom_social_motive(event, workspace, _context(clock)) is not None
+    event = _appraisal(user, clock)
+    assert service.form_own_emotion_social_motive(
+            event, workspace, _context(clock), target=subject
+        ) is not None
     assert len(service.active(subject, as_of=clock.now())) == 1
 
     governance.save_controls(
@@ -206,17 +225,14 @@ def test_long_term_mood_decay_ends_proactive_motive():
     )
     assert decay_emotion(emotion, T0 + timedelta(seconds=120)) is None
 
-    event = EventEnvelope.user_message(
-        "decay-user",
-        "好无聊，想找人聊聊",
-        clock=clock,
-    )
+    event = _appraisal("decay-user", clock)
     service = ProactiveIntentionService(InMemoryEventStore())
     assert (
-        service.form_boredom_social_motive(
+        service.form_own_emotion_social_motive(
             event,
             _workspace("decay-user", bored=False),
             _context(clock),
+            target=SubjectScope.legacy_user("decay-user"),
         )
         is None
     )

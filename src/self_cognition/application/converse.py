@@ -8,12 +8,15 @@ from self_cognition.application.process_event import ProcessEventService
 from self_cognition.application.results import ConverseResult, ProcessEventStatus
 from self_cognition.core.dialogue import (
     AssistantMessagePayload,
+    ClaimStance,
+    DialogueClaim,
     DialogueContextPayload,
     DialogueDraft,
     DialogueFailurePayload,
     DialogueModel,
     DialogueModelOutput,
     DialogueRequest,
+    GroundingReview,
     draft_from_dict,
     parse_model_json,
     review_from_dict,
@@ -48,6 +51,9 @@ from self_cognition.executive.dialogue.grounding import (
 from self_cognition.runtime.run_context import RunContext
 
 logger = logging.getLogger(__name__)
+
+
+EXPLICIT_UNKNOWN_TEXT = "这一点我目前没有足够的证据支持，暂时不能给出确定的回答。"
 
 
 class ConverseService:
@@ -264,14 +270,53 @@ class ConverseService:
                     review = review_from_dict(parse_model_json(repaired.raw_output))
                 decision = self._review_policy.decide(review, workspace)
                 if not decision.accepted:
-                    return self._failure(
-                        origin,
-                        cause,
-                        context,
-                        stage,
-                        "GroundingRejected",
-                        processed.old_version,
-                        processed.new_version,
+                    # 先给一次重写机会，而不是让一句无据措辞废掉整轮对话。
+                    retried = None
+                    try:
+                        retried = self._retry_grounding(
+                            origin,
+                            cause,
+                            workspace,
+                            output,
+                            review,
+                            payload.workspace_json,
+                            context,
+                        )
+                    except ModelOutputError:
+                        retried = None
+                    if retried is not None:
+                        retry_draft, retry_cited, retry_review = retried
+                        review = retry_review
+                        if self._review_policy.decide(
+                            retry_review, workspace
+                        ).accepted:
+                            draft, cited = retry_draft, retry_cited
+                            decision = self._review_policy.decide(
+                                review, workspace
+                            )
+                if not decision.accepted:
+                    # 仍不通过：给出明确的「不知道」。不软化、不编造，
+                    # 拒绝原因通过 review 随回答一起留档。
+                    #
+                    # 替换后的回答不再做任何断言，因此 draft、review 和证据
+                    # 引用必须一起重建：事件契约禁止持久化未通过 grounding 的
+                    # 回答，也禁止回答挂着自己没有引用的证据。
+                    draft = DialogueDraft(
+                        EXPLICIT_UNKNOWN_TEXT,
+                        (
+                            DialogueClaim(
+                                EXPLICIT_UNKNOWN_TEXT,
+                                (),
+                                ClaimStance.UNKNOWN,
+                            ),
+                        ),
+                        replace(draft.disclosure, evidence_ids=()),
+                    )
+                    cited = ()
+                    review = GroundingReview(
+                        True,
+                        "the generated answer failed grounding and was replaced "
+                        f"by an explicit unknown: {review.reason}",
                     )
             stage = "persist_answer"
             self._require_live(workspace)
@@ -383,6 +428,49 @@ class ConverseService:
         if workspace.input_evidence is not None:
             refs[workspace.input_evidence.evidence_id] = workspace.input_evidence
         return tuple(refs.values())
+
+    def _retry_grounding(
+        self,
+        origin: EventEnvelope,
+        cause: EventEnvelope,
+        workspace: WorkspacePacket,
+        output: DialogueModelOutput,
+        review: object,
+        snapshot: str,
+        context: RunContext,
+    ):
+        """Grounding 不通过时，先让模型带着拒绝原因重写一次。
+
+        这是消除生成缺陷，不是放宽事实校验：重写后的回答仍要重新过同一套
+        grounding review。
+        """
+        repair = getattr(self._model, "repair", None)
+        if not callable(repair):
+            return None
+        detail = "grounding review rejected the answer and it must be corrected"
+        unsupported = tuple(getattr(review, "unsupported_claims", ()))
+        uncertain = tuple(getattr(review, "uncertain_claims", ()))
+        if unsupported:
+            detail += "; unsupported claims: " + " | ".join(unsupported)
+        if uncertain:
+            detail += "; claims needing uncertain wording: " + " | ".join(uncertain)
+        self._require_live(workspace)
+        self._ensure_active(context)
+        context.record_model_call()
+        repaired = repair(workspace, output, ModelOutputError(detail), context)
+        if repaired is None:
+            return None
+        self._save_output(cause, repaired, context)
+        self._ensure_active(context)
+        self._require_unchanged(workspace, snapshot)
+        draft, cited = self._parse_dialogue_draft(repaired, workspace, origin)
+        self._require_live(workspace)
+        context.record_model_call()
+        reviewed = self._model.review(workspace, draft, context)
+        self._save_output(cause, reviewed, context)
+        self._ensure_active(context)
+        self._require_unchanged(workspace, snapshot)
+        return draft, cited, review_from_dict(parse_model_json(reviewed.raw_output))
 
     @staticmethod
     def _parse_dialogue_draft(

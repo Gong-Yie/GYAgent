@@ -178,10 +178,12 @@ def test_cli_and_http_negative_proactivity_stay_silent(tmp_path, capsys) -> None
             {},
             {"subject_id": subject.subject.subject_id, "message": "没有需要跟进的变化"},
         )
-        assert http_output["status"] == "accepted"
+        # worker 模式也必须返回真实回答，而不是固定回执
+        assert http_output.get("response")
         app.event_bus.drain(clock=FixedClock())
         assert app.proactive.mailbox(subject, as_of=NOW) == ()
-        assert json.loads(cli_output)["slow_pending"] is True
+        assert json.loads(cli_output).get("response")
+        assert "slow_pending" not in json.loads(cli_output)
     finally:
         app.lifecycle.stop()
 

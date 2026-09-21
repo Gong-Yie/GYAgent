@@ -69,9 +69,16 @@ def test_force_kill_pending_event_recovers_and_drains(tmp_path: Path) -> None:
     subject = SubjectScope.legacy_user("kill-user")
 
     assert len(container.event_bus.backlog()) == 1
-    drained = container.event_bus.drain()
-    assert len(drained) == 1
+    # 像 worker 一样排空：用户消息之后还会有一次自我评估事件。
+    drained = []
+    for _ in range(5):
+        batch = container.event_bus.drain()
+        drained.extend(batch)
+        if not batch:
+            break
+    assert len(drained) == 2
     assert drained[0].status is ProcessEventStatus.SUCCEEDED
+    assert drained[1].status is ProcessEventStatus.SUCCEEDED
 
     state = container.state_repository.load(subject)
     assert state is not None
@@ -188,12 +195,31 @@ def test_affect_and_proactive_state_survive_restart(tmp_path: Path) -> None:
     )
 
     container.event_bus.publish(event, context)
-    drained = container.event_bus.drain()
-    assert len(drained) == 1
-    assert drained[0].status is ProcessEventStatus.SUCCEEDED
+    # 像 worker 一样反复 drain：用户消息之后还会产生一次自我评估事件，
+    # 只有评估被处理，Agent 自己的情绪才会写回 mind。
+    drained = []
+    for _ in range(5):
+        batch = container.event_bus.drain()
+        drained.extend(batch)
+        if not batch:
+            break
+    assert len(drained) == 2
+    assert all(
+        item.status is ProcessEventStatus.SUCCEEDED for item in drained
+    )
 
     state = container.state_repository.load(subject)
     assert state is not None
+    # Agent 自己的反应写在 mind 上，情绪对象指向触发它的用户
+    mind_state = container.state_repository.load(
+        SubjectScope.for_mind(subject.mind.mind_id)
+    )
+    assert mind_state is not None
+    reaction = mind_state.get("affect.reaction.interaction").value
+    assert reaction["emotion"] == "boredom"
+    assert reaction["target"] == subject.subject.subject_id
+    assert reaction["cause"] == "user.message"
+
     now = SYSTEM_CLOCK.now()
     workspace = container.workspace_builder.build(event.payload.text, state)
     container.proactive.consume_due(
@@ -213,6 +239,10 @@ def test_affect_and_proactive_state_survive_restart(tmp_path: Path) -> None:
         for item in container.proactive.mailbox(subject, as_of=now)
     ]
     assert mailbox_before
+    # 动机由 mind 形成，主动接触的对象是用户而不是 Agent 自己
+    intention = container.proactive.active(subject, as_of=now)[0]
+    assert intention.motive.subject_id == subject.mind.mind_id
+    assert intention.target == subject
 
     restarted = build_container(
         tmp_path,
@@ -305,6 +335,12 @@ def test_multi_process_workers_shard_subjects_without_duplicate_processing(
         state = restarted.state_repository.load(subject)
         assert state is not None
         assert state.version == 3
+
+    # 分片 worker 只处理各自的主体；自我评估事件的归属是 mind，可能在它们
+    # 退出之后才产生，所以最后由一次全量 drain 收口。
+    for _ in range(10):
+        if not restarted.event_bus.drain():
+            break
 
     assert restarted.event_bus.backlog() == ()
     assert restarted.event_bus.dead_letters() == ()

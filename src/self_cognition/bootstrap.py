@@ -62,7 +62,7 @@ from self_cognition.core.protocols import (
 )
 from self_cognition.core.proactivity import ProactivityModel
 from self_cognition.core.state import SubjectState
-from self_cognition.core.scopes import SubjectScope
+from self_cognition.core.scopes import SubjectKind, SubjectScope
 from self_cognition.core.workspace import WorkspaceBuilder
 from self_cognition.cognition.semantic.concept_pattern_extractor import (
     ConceptPatternExtractor,
@@ -517,8 +517,18 @@ def build_container(
         scheduler,
         fast_handler=default_fast_handler,
     )
+    # 触发自我评估的事件：Agent 自己的结果，以及会引发它作出反应的用户消息。
+    # 评估事件的主题是 mind，所以它需要一次独立的认知循环，才能把 Agent 自己
+    # 的情绪写回 mind 的状态，而不是留在事件主体上。
+    self_appraisal_event_types = frozenset(
+        {"action.result", "goal.status_changed", "user.message"}
+    )
+
     def after_success(event: EventEnvelope, context: RunContext) -> None:
         wake_subjects.add(event.subject)
+        # 评估事件是内部重评估，不是新的外部输入：它只更新 mind 的情绪与
+        # 心境，不交给主动模型再提一次动机。
+        internal = event.event_type == "cognition.assessment_requested"
         observed = None
         try:
             observed = proactive.observe_event(event, context=context)
@@ -529,7 +539,11 @@ def build_container(
                     mind_id=event.subject.mind.mind_id,
                     subject_kind=event.subject.subject.kind,
                 )
-            if observed is None and getattr(event.payload, "text", None):
+            if (
+                observed is None
+                and not internal
+                and getattr(event.payload, "text", None)
+            ):
                 workspace = workspace_builder.build(event.payload.text, state)
                 try:
                     proactive.evaluate(event, workspace, context)
@@ -543,22 +557,6 @@ def build_container(
                         event.event_id,
                         type(error).__name__,
                     )
-                try:
-                    proactive.form_boredom_social_motive(
-                        event,
-                        workspace,
-                        context,
-                    )
-                except Exception as error:
-                    if metrics is not None:
-                        metrics.increment(
-                            "proactive.after_success.deterministic_failures"
-                        )
-                    logger.warning(
-                        "proactive motive formation failed event_id=%s error_type=%s",
-                        event.event_id,
-                        type(error).__name__,
-                    )
         except Exception as error:
             if metrics is not None:
                 metrics.increment("proactive.after_success.failures")
@@ -567,6 +565,52 @@ def build_container(
                 event.event_id,
                 type(error).__name__,
             )
+        if event.event_type in self_appraisal_event_types:
+            try:
+                event_bus.publish(
+                    EventEnvelope.assessment_requested(
+                        event,
+                        "评估刚刚发生的事件对自身目标、关系和当前情绪的意义",
+                    ),
+                    RunContext(
+                        run_id=new_run_id(),
+                        correlation_id=new_correlation_id(),
+                        deadline=context.clock.now() + timedelta(minutes=5),
+                        clock=context.clock,
+                    ),
+                )
+            except Exception as error:
+                if metrics is not None:
+                    metrics.increment("affect.self_appraisal.failures")
+                logger.warning(
+                    "self appraisal request failed event_id=%s error_type=%s",
+                    event.event_id,
+                    type(error).__name__,
+                )
+        elif internal:
+            source = event.payload.source_event
+            # 主动接触的对象必须是另一个主体。评估本身属于 mind，所以当源事件
+            # 也是 Agent 自己的结果时，没有可接触的对象，只保留情绪累积。
+            if source.subject.subject.kind is not SubjectKind.MIND:
+                try:
+                    mind_state = state_repository.load(
+                        SubjectScope.for_mind(event.subject.mind.mind_id)
+                    )
+                    if mind_state is not None:
+                        proactive.form_own_emotion_social_motive(
+                            event,
+                            workspace_builder.build("自身情绪评估", mind_state),
+                            context,
+                            target=source.subject,
+                        )
+                except Exception as error:
+                    if metrics is not None:
+                        metrics.increment("affect.own_emotion_motive.failures")
+                    logger.warning(
+                        "own emotion motive failed event_id=%s error_type=%s",
+                        event.event_id,
+                        type(error).__name__,
+                    )
         if event.event_type == "user.message":
             converse.converse(DialogueRequest(event), context)
 

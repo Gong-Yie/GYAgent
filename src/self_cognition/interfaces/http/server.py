@@ -192,20 +192,12 @@ def _handle(container: ApplicationContainer, method: str, path: str, query: dict
             raise ValueError("conversation_id must be a non-blank string")
         conversation = ConversationScope(conversation_id) if conversation_id else None
         event = EventEnvelope.user_message(subject, text, conversation=conversation, run_id=context.run_id, correlation_id=context.correlation_id)
-        if container.settings.worker_enabled:
-            container.event_bus.publish(event, context)
-            fast = container.orchestrator.fast_only(event, context)
-            value = fast.value
-            return {
-                "status": "accepted",
-                "run_id": str(context.run_id),
-                "correlation_id": str(context.correlation_id),
-                "slow_pending": True,
-                "response": value.text,
-                "intention_ids": list(value.intention_ids),
-            }
         result = container.converse.converse(DialogueRequest(event), context)
-        return _converse(result)
+        payload = _converse(result)
+        # worker 模式不再把对话降级为固定回执：对话始终返回真实回答，
+        # 后台 worker 只额外承担定时唤醒与主动行为。
+        payload["worker_enabled"] = bool(container.settings.worker_enabled)
+        return payload
     if method == "GET" and path == "/memories":
         return {"memories": [memory_to_dict(item) for item in container.memory_repository.read_by_subject(subject)]}
     if method == "GET" and path == "/goals":

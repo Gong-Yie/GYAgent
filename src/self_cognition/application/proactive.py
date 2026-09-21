@@ -362,14 +362,24 @@ class ProactiveIntentionService:
         )
         return self.propose(intention, context=context)
 
-    def form_boredom_social_motive(
+    def form_own_emotion_social_motive(
         self,
         event: EventEnvelope,
         workspace: WorkspacePacket,
         context: RunContext | None = None,
+        *,
+        target: SubjectScope | None = None,
     ) -> EventEnvelope | None:
+        """Form a social motive from the Agent's own emotion projection.
+
+        The supplied workspace must be built from the mind's own state, so that
+        the detected emotion belongs to the Agent rather than to a user. The
+        resulting intention is addressed to ``target`` (normally the user the
+        Agent wants to reach), while the motive records the mind as its author.
+        """
         if not self._boredom_detected(workspace):
             return None
+        recipient = target if target is not None else event.subject
         now = context.clock.now() if context is not None else event.recorded_at
         mind = SubjectScope.for_mind(event.subject.mind.mind_id)
         with self._proposal_lock:
@@ -383,7 +393,7 @@ class ProactiveIntentionService:
                 uuid4(),
                 event.subject.mind.mind_id,
                 SOCIAL_CONNECTION_KIND,
-                "boredom and unmet social interaction need",
+                "own accumulated emotion indicates unmet social interaction need",
                 0.8,
                 1,
                 now,
@@ -393,14 +403,14 @@ class ProactiveIntentionService:
             intention = ProactiveIntention(
                 uuid4(),
                 motive,
-                event.subject,
-                "主动问候并邀请用户聊天",
+                recipient,
+                "主动联系用户并表达当前的社交需要",
                 1,
                 0,
                 (EvidenceRef.for_event(event),),
                 now,
                 now + timedelta(minutes=10),
-                idempotency_key=f"affect-social:{event.event_id}",
+                idempotency_key=f"own-affect-social:{event.event_id}",
             )
             return self.propose(intention, context=context)
 

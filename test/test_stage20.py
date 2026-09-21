@@ -8,6 +8,7 @@ from uuid import UUID, uuid4, uuid5
 
 import pytest
 
+from self_cognition.application.converse import EXPLICIT_UNKNOWN_TEXT
 from self_cognition.application.results import ProcessEventStatus
 from self_cognition.bootstrap import ApplicationContainer, build_container
 from self_cognition.core.contributions import CognitionType
@@ -336,8 +337,6 @@ def test_smalltalk_and_unknown_have_bounded_calls(
     [
         ("malformed", "ModelOutputError", ["generate"]),
         ("foreign_citation", "ModelOutputError", ["generate"]),
-        ("unsupported", "GroundingRejected", ["generate", "review"]),
-        ("hidden_claim", "GroundingRejected", ["generate", "review"]),
         ("bad_review", "ModelOutputError", ["generate", "review"]),
         ("cancel", "RunCancelledError", ["generate"]),
         ("timeout", "ModelTimeoutError", ["generate"]),
@@ -371,6 +370,63 @@ def test_invalid_or_interrupted_output_is_persisted_but_not_published(
     repeated = container.converse.converse(request, context())
     assert repeated.reused and repeated.error_type == error_type
     assert model.calls == calls
+
+
+@pytest.mark.parametrize("problem", ["unsupported", "hidden_claim"])
+def test_rejected_grounding_falls_back_to_an_explicit_unknown(
+    tmp_path: Path, problem: str
+) -> None:
+    """grounding 被拒后给明确的「不知道」，而不是让整轮对话失败。
+
+    替换后的回答不再做任何断言，所以它必须同时带上 unknown 立场的声明、
+    空证据和一条说明替换原因的 review —— 事件契约禁止持久化未通过
+    grounding 的回答，也禁止回答挂着自己没有引用的证据。
+    """
+    model = CountingModel(problem)
+    container = build_container(tmp_path, dialogue_model=model)
+    seed(container, message("我喜欢晚上学习"))
+    request = DialogueRequest(message())
+    result = container.converse.converse(request, context())
+
+    assert result.status is ProcessEventStatus.SUCCEEDED
+    assert result.error_type is None
+    assert model.calls == ["generate", "review"]
+
+    answer = result.response
+    assert answer is not None
+    assert answer.text == EXPLICIT_UNKNOWN_TEXT
+    assert len(answer.claims) == 1
+    claim = answer.claims[0]
+    assert claim.text == EXPLICIT_UNKNOWN_TEXT
+    assert claim.stance is ClaimStance.UNKNOWN
+    assert claim.evidence_ids == ()
+    assert answer.disclosure.evidence_ids == ()
+    # 没有断言的回答不引用任何证据
+    assert result.evidence_refs == ()
+
+    events = container.event_store.read_by_subject(SubjectScope.for_mind("mind-20"))
+    answers = [event for event in events if event.event_type == "assistant.message"]
+    assert len(answers) == 1
+    assert not any(event.event_type == "dialogue.failed" for event in events)
+
+    payload = answers[0].payload
+    assert payload.review is not None and payload.review.supported
+    # 原拒绝原因随回答一起留档
+    assert "failed grounding" in payload.review.reason
+    assert payload.evidence_refs == ()
+
+    # 模型原始输出与 review 原文仍然持久化，回答可追溯
+    raw = [
+        event.payload.raw_output
+        for event in events
+        if event.event_type == "model.response"
+    ]
+    assert len(raw) == 2
+
+    repeated = container.converse.converse(request, context())
+    assert repeated.reused
+    assert repeated.response == answer
+    assert model.calls == ["generate", "review"]
 
 
 def test_low_confidence_cannot_be_relabelled_as_certain(tmp_path: Path) -> None:

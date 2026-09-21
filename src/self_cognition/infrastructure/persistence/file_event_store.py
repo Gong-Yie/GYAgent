@@ -33,16 +33,19 @@ class FileEventStore:
         self._tombstones = self._read_tombstones()
         self._events = list(self._read_events())
         self._event_ids = {event.event_id for event in self._events}
+        self._size = self._current_size()
         self._lock = RLock()
 
     def append(self, event: EventEnvelope) -> None:
         with self._lock:
+            self._refresh_unlocked()
             if self._is_duplicate_unlocked(event):
                 return
             self._append_unlocked(event)
 
     def append_many(self, events: tuple[EventEnvelope, ...]) -> None:
         with self._lock:
+            self._refresh_unlocked()
             pending = tuple(
                 event for event in events if not self._is_duplicate_unlocked(event)
             )
@@ -52,6 +55,28 @@ class FileEventStore:
                 raise ValueError("event batch contains duplicate IDs")
             for event in pending:
                 self._append_unlocked(event)
+
+    def _current_size(self) -> int:
+        try:
+            return self._path.stat().st_size
+        except OSError:
+            return 0
+
+    def _refresh_unlocked(self) -> None:
+        """Pick up events and tombstones another process appended meanwhile.
+
+        The event log is the source of truth, so a reader that only kept its
+        construction-time snapshot would miss newly appended events and
+        tombstones. A background worker clears outbox entries for events
+        appended by a sibling process, and a deletion performed elsewhere must
+        become effective here without a restart.
+        """
+        if self._current_size() == self._size:
+            return
+        self._tombstones = self._read_tombstones()
+        self._events = list(self._read_events())
+        self._event_ids = {event.event_id for event in self._events}
+        self._size = self._current_size()
 
     def _is_duplicate_unlocked(self, event: EventEnvelope) -> bool:
         return (
@@ -78,6 +103,7 @@ class FileEventStore:
                 os.fsync(handle.fileno())
         self._events.append(event)
         self._event_ids.add(event.event_id)
+        self._size = self._current_size()
 
     def read_by_subject(
         self,
@@ -86,12 +112,14 @@ class FileEventStore:
         if not isinstance(subject, SubjectScope):
             raise TypeError("subject must be a SubjectScope")
         with self._lock:
+            self._refresh_unlocked()
             return tuple(
                 event for event in self._events if event.subject == subject
             )
 
     def read_all(self) -> tuple[EventEnvelope, ...]:
         with self._lock:
+            self._refresh_unlocked()
             return tuple(self._events)
 
     def redact(
@@ -117,11 +145,14 @@ class FileEventStore:
             self._event_ids.difference_update(targets)
             payload = "".join(event_to_json(event) + "\n" for event in self._events)
         atomic_write_text(self._path, payload)
+        with self._lock:
+            self._size = self._current_size()
 
     def read_by_mind(self, mind: MindScope) -> tuple[EventEnvelope, ...]:
         if not isinstance(mind, MindScope):
             raise TypeError("mind must be a MindScope")
         with self._lock:
+            self._refresh_unlocked()
             return tuple(event for event in self._events if event.subject.mind == mind)
 
     def _read_events(self) -> tuple[EventEnvelope, ...]:

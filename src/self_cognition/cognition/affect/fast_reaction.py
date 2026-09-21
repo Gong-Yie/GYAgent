@@ -44,7 +44,12 @@ class FastAffectExtractor:
     """Deterministic low-latency affect reaction and mood accumulation."""
 
     subscriptions = frozenset(
-        {"user.message", "action.result", "goal.status_changed"}
+        {
+            "user.message",
+            "action.result",
+            "goal.status_changed",
+            "cognition.assessment_requested",
+        }
     )
     module_id = SOURCE_MODULE
     module_version = MODULE_VERSION
@@ -55,10 +60,11 @@ class FastAffectExtractor:
         request: CognitionRequest,
     ) -> tuple[CognitiveContribution, ...]:
         event = request.event
-        text = getattr(event.payload, "text", "")
+        source = self._reaction_source(event)
+        text = getattr(source.payload, "text", "")
         if not isinstance(text, str):
             text = ""
-        emotion = self._classify(text, event)
+        emotion = self._classify(text, source)
         if emotion is None:
             return ()
         scope, emotion_name, valence, arousal, control, certainty, intensity = emotion
@@ -67,7 +73,9 @@ class FastAffectExtractor:
                 event.event_id,
                 f"fast-affect:{scope}:{emotion_name}",
             ),
-            target=event.subject.subject.subject_id,
+            # 情绪的对象是触发它的主体；评估事件自己属于 Agent，所以反应写回
+            # 评估主体（mind），对象仍然指向被评估事件的主体。
+            target=source.subject.subject.subject_id,
             emotion=emotion_name,
             valence=valence,
             scope=scope,
@@ -77,8 +85,9 @@ class FastAffectExtractor:
             arousal=arousal,
             control=control,
             certainty=certainty,
-            cause=event.event_type,
+            cause=source.event_type,
         )
+        evidence_refs = self._evidence(source, event)
         reaction_field = f"affect.reaction.{scope}"
         contributions = [
             CognitiveContribution.set_from_event(
@@ -92,7 +101,7 @@ class FastAffectExtractor:
                 cognition_type=CognitionType.AFFECT,
                 value=emotion_state.to_state_value(),
                 confidence=0.6,
-                evidence_refs=(EvidenceRef.for_event(event),),
+                evidence_refs=evidence_refs,
                 source_module=SOURCE_MODULE,
                 module_version=MODULE_VERSION,
             )
@@ -115,12 +124,37 @@ class FastAffectExtractor:
                 cognition_type=CognitionType.AFFECT,
                 value=mood.to_state_value(),
                 confidence=0.6,
-                evidence_refs=(EvidenceRef.for_event(event),),
+                evidence_refs=evidence_refs,
                 source_module=SOURCE_MODULE,
                 module_version=MODULE_VERSION,
             )
         )
         return tuple(contributions)
+
+    @staticmethod
+    def _reaction_source(event: EventEnvelope) -> EventEnvelope:
+        """Return the event whose meaning the Agent reacts to.
+
+        For a self appraisal the reaction belongs to the Agent, so the
+        contribution is written to the appraising subject (the mind), while the
+        text and the emotion object come from the appraised source event.
+        """
+        if event.event_type != "cognition.assessment_requested":
+            return event
+        source = getattr(event.payload, "source_event", None)
+        if not isinstance(source, EventEnvelope):
+            return event
+        return source
+
+    @staticmethod
+    def _evidence(
+        source: EventEnvelope,
+        event: EventEnvelope,
+    ) -> tuple[EvidenceRef, ...]:
+        if source is event:
+            return (EvidenceRef.for_event(event),)
+        refs = [EvidenceRef.for_event(event), EvidenceRef.for_event(source)]
+        return tuple(refs)
 
     @staticmethod
     def _prior_mood(request: CognitionRequest) -> MoodState | None:

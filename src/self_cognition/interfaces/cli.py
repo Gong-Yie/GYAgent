@@ -74,22 +74,15 @@ def _chat(argv: list[str], container: ApplicationContainer | None) -> int:
     conversation = ConversationScope(args.conversation_id) if args.conversation_id else None
     event = EventEnvelope.user_message(SubjectScope.legacy_user(args.subject_id), args.message, conversation=conversation, run_id=context.run_id, correlation_id=context.correlation_id)
     if dependencies.settings.worker_enabled:
-        dependencies.event_bus.publish(event, context)
-        fast = dependencies.orchestrator.fast_only(event, context)
-        value = fast.value
-        output = {
-            "status": "accepted",
-            "run_id": str(context.run_id),
-            "correlation_id": str(context.correlation_id),
-            "slow_pending": True,
-            "response": value.text,
-            "intention_ids": list(value.intention_ids),
-        }
-        print(json.dumps(output, ensure_ascii=False, sort_keys=True))
-        return 0
-    with dependencies.lifecycle:
+        # 调用方可能传入共享容器；worker 模式下不进入 lifecycle 以免关闭它。
         result = dependencies.converse.converse(DialogueRequest(event), context)
-    print(json.dumps(_result_output(result), ensure_ascii=False, sort_keys=True))
+    else:
+        with dependencies.lifecycle:
+            result = dependencies.converse.converse(DialogueRequest(event), context)
+    output = _result_output(result)
+    # worker 模式只额外启用后台唤醒，对话仍返回真实回答。
+    output["worker_enabled"] = bool(dependencies.settings.worker_enabled)
+    print(json.dumps(output, ensure_ascii=False, sort_keys=True))
     return 0 if result.status is ProcessEventStatus.SUCCEEDED else 1
 
 
