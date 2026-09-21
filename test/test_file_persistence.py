@@ -73,6 +73,46 @@ def test_file_event_store_appends_deduplicates_and_reloads(tmp_path):
     ) == 2
 
 
+def test_file_event_store_observes_records_a_sibling_appended(tmp_path):
+    """一个实例必须看到另一个实例追加的事件，且偏移不落在记录中间。"""
+    path = tmp_path / "events.jsonl"
+    first = FileEventStore(path)
+    second = FileEventStore(path)
+    one = Event.user_message("user-1", "甲")
+    two = Event.user_message("user-2", "乙")
+    three = Event.user_message("user-1", "丙")
+
+    first.append(one)
+    second.append(two)
+    first.append(three)
+
+    # 顺序即物理追加顺序，尾部读取期间不会解析出半个记录
+    assert second.read_all() == (one, two, three)
+    assert first.read_all() == (one, two, three)
+    assert second.read_by_subject(one.subject) == (one, three)
+
+
+def test_file_event_store_propagates_a_sibling_deletion(tmp_path):
+    """删除必须传播到其它实例，且被删除的事件不能通过追加复活。"""
+    path = tmp_path / "events.jsonl"
+    tombstones = tmp_path / "event_tombstones.jsonl"
+    first = FileEventStore(path, tombstones)
+    second = FileEventStore(path, tombstones)
+    removed = Event.user_message("user-1", "要被遗忘的")
+    kept = Event.user_message("user-2", "保留的")
+
+    first.append(removed)
+    first.append(kept)
+    assert second.read_all() == (removed, kept)
+
+    first.redact(removed.subject, (removed.event_id,), UUID(int=9))
+
+    assert second.read_all() == (kept,)
+    second.append(removed)
+    assert second.read_all() == (kept,)
+    assert FileEventStore(path, tombstones).read_all() == (kept,)
+
+
 def test_file_event_store_rejects_corrupt_records_instead_of_ignoring_them(tmp_path):
     path = tmp_path / "events.jsonl"
     path.write_text("{broken}\n", encoding="utf-8")
@@ -100,11 +140,23 @@ def test_event_write_failure_does_not_mark_event_as_appended(tmp_path, monkeypat
 
 
 class _FailingHandle:
+    """A handle whose reads succeed but whose writes fail.
+
+    Appending reads the log tail first, to keep its byte offset on a record
+    boundary, so only ``write`` may raise for the assertion under test.
+    """
+
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc, tb):
         return False
+
+    def seek(self, offset):
+        self.offset = offset
+
+    def read(self, size=-1):
+        return b""
 
     def write(self, value):
         raise OSError("simulated write failure")
