@@ -718,7 +718,7 @@ def _retrieve_state(
         else:
             fields = (pattern,)
         for field_name in fields:
-            memory_type = _field_memory_type(field_name)
+            memory_type = memory_type_for_field(field_name)
             if query.memory_types and memory_type not in query.memory_types:
                 continue
             entry = state.entries.get(field_name)
@@ -890,7 +890,8 @@ def _narrative_order(item: WorkspaceItem) -> tuple[object, ...]:
     )
 
 
-def _field_memory_type(field_name: str) -> MemoryType | None:
+def memory_type_for_field(field_name: str) -> MemoryType | None:
+    """Return the memory type a state field belongs to, when it is known."""
     if field_name.startswith("episodic."):
         return MemoryType.EPISODIC
     if field_name.startswith("procedural."):
