@@ -5,12 +5,13 @@ from datetime import datetime
 
 from self_cognition.core.indexes import WorkspaceIndex, text_terms
 from self_cognition.core.evidence import EvidenceRef
-from self_cognition.core.memories import MemoryLifecycleStatus, MemoryRecord, MemoryType
+from self_cognition.core.memories import MemoryLifecycleStatus, MemoryRecord
 from self_cognition.core.protocols import MemoryRepository
 from self_cognition.core.state import StateAtom, SubjectState
 from self_cognition.core.workspace import (
     _closed_legacy_conflict,
     conflict_candidates,
+    memory_type_for_field,
     state_content,
     RetrievalCandidate,
     RetrievalQuery,
@@ -98,7 +99,7 @@ class HybridWorkspaceRetriever:
     ) -> tuple[RetrievalCandidate, ...]:
         result: list[RetrievalCandidate] = []
         for field_name, atom in sorted(state.entries.items()):
-            memory_type = _field_memory_type(field_name)
+            memory_type = memory_type_for_field(field_name)
             if query.memory_types and memory_type not in query.memory_types:
                 continue
             reference = f"state:{field_name}"
@@ -252,22 +253,6 @@ def _candidate_from_memory(
         estimated_tokens=estimate_tokens(record.content),
         reason=f"active memory matched task; {view.explanation}",
     )
-
-
-def _field_memory_type(field_name: str) -> MemoryType | None:
-    if field_name.startswith("episodic."):
-        return MemoryType.EPISODIC
-    if field_name.startswith("procedural."):
-        return MemoryType.PROCEDURAL
-    if field_name.startswith(
-        ("profile.", "preferences.", "identity.", "values.", "semantic.")
-    ):
-        return MemoryType.SEMANTIC
-    if field_name.startswith("relationships."):
-        return MemoryType.RELATIONSHIP
-    if field_name.startswith("narrative."):
-        return MemoryType.NARRATIVE
-    return None
 
 
 def _relevance(
